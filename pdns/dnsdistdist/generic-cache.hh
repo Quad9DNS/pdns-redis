@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "cachecleaner.hh"
+#include "gettime.hh"
 #include "lock.hh"
 
 using namespace ::boost::multi_index;
@@ -97,8 +98,9 @@ public:
 
     if (d_settings.d_maxEntries > 0 && d_shards.at(shardIndex).d_entriesCount >= (d_settings.d_maxEntries / d_settings.d_shardCount)) {
       if (d_settings.d_ttlEnabled) {
-        time_t now = time(nullptr);
-        purgeExpired(0, now);
+        timespec now;
+        gettime(&now);
+        purgeExpired(0, now.tv_sec);
       }
       if (d_settings.d_lruEnabled) {
         expunge(d_settings.d_lruDeleteUpTo == 0 ? d_settings.d_maxEntries - 1 : d_settings.d_lruDeleteUpTo);
@@ -111,8 +113,9 @@ public:
 
     time_t validity;
     if (d_settings.d_ttlEnabled) {
-      time_t now = time(nullptr);
-      validity = now + d_settings.d_ttl;
+      timespec now;
+      gettime(&now);
+      validity = now.tv_sec + d_settings.d_ttl;
     }
     else {
       validity = time_t();
@@ -169,8 +172,9 @@ public:
       }
 
       if (d_settings.d_ttlEnabled) {
-        time_t now = time(nullptr);
-        if (mapIt->validity > now) {
+        timespec now;
+        gettime(&now);
+        if (mapIt->validity > now.tv_sec) {
           value = mapIt->value;
           result = true;
         }
@@ -214,8 +218,9 @@ public:
       }
 
       if (d_settings.d_ttlEnabled) {
-        time_t now = time(nullptr);
-        if (mapIt->validity > now) {
+        timespec now;
+        gettime(&now);
+        if (mapIt->validity > now.tv_sec) {
           result = true;
         }
       }

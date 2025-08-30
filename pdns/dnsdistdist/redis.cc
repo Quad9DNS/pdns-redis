@@ -381,8 +381,7 @@ bool CopyCache::needsUpdate()
 {
   struct timespec now;
   gettime(&now);
-  auto nowMs = now.tv_sec * 1000 + now.tv_nsec / 1000000L;
-  return d_lastInsertMs + d_ttlMs < nowMs;
+  return d_lastInsert + d_ttl < now.tv_sec;
 };
 
 void CopyCache::insertBatch(std::unordered_map<std::string, std::string> batch)
@@ -395,12 +394,12 @@ void CopyCache::insertBatch(std::unordered_map<std::string, std::string> batch)
   }
   struct timespec now;
   gettime(&now);
-  d_lastInsertMs = now.tv_sec * 1000 + now.tv_nsec / 1000000L;
+  d_lastInsert = now.tv_sec;
 };
 
 size_t CopyCache::purgeExpired([[maybe_unused]] size_t upTo, const time_t now)
 {
-  if (d_lastInsertMs < now * 1000 - d_ttlMs) {
+  if (d_lastInsert < now - d_ttl) {
     return expunge(upTo);
   }
 

@@ -540,8 +540,8 @@ private:
 class CopyCache : public GenericCacheInterface<std::string, std::string>
 {
 public:
-  CopyCache(unsigned int ttlMs) :
-    d_ttlMs(ttlMs)
+  CopyCache(unsigned int ttl) :
+    d_ttl(ttl)
   {
   }
   void insert(const std::string& key, std::string value) override;
@@ -556,17 +556,17 @@ public:
 
 private:
   SharedLockGuarded<std::unordered_map<std::string, std::string>> d_map{};
-  const unsigned int d_ttlMs;
-  unsigned int d_lastInsertMs;
+  const unsigned int d_ttl;
+  unsigned int d_lastInsert;
 };
 
 class CopyCachingRedisClient : public RedisKVClientInterface
 {
 public:
-  CopyCachingRedisClient(std::unique_ptr<RedisKVClientInterface> client, unsigned int cacheTtlMs) :
+  CopyCachingRedisClient(std::unique_ptr<RedisKVClientInterface> client, unsigned int cacheTtl) :
     d_client(std::move(client))
   {
-    d_copyCache = std::make_shared<CopyCache>(cacheTtlMs);
+    d_copyCache = std::make_shared<CopyCache>(cacheTtl);
   }
 
   bool getValue(const std::string& key, std::string& value) override;
