@@ -81,6 +81,7 @@ public:
     bool d_lruEnabled;
     uint32_t d_shardCount{1};
     uint32_t d_maxEntries{0};
+    uint32_t d_lruDeleteUpTo{0};
   };
 
   GenericCache(CacheSettings settings) :
@@ -100,7 +101,7 @@ public:
         purgeExpired(0, now);
       }
       if (d_settings.d_lruEnabled) {
-        expunge(d_settings.d_maxEntries - 1);
+        expunge(d_settings.d_lruDeleteUpTo == 0 ? d_settings.d_maxEntries - 1 : d_settings.d_lruDeleteUpTo);
       }
 
       if (d_shards.at(shardIndex).d_entriesCount >= (d_settings.d_maxEntries / d_settings.d_shardCount)) {

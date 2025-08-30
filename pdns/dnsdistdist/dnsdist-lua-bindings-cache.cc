@@ -32,15 +32,17 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     unsigned int shardCount{1};
     unsigned int ttl{100};
     unsigned int maxEntries{100};
+    unsigned int lruDeleteUpTo{0};
     bool ttlEnabled{false};
     bool lruEnabled{false};
     getOptionalValue<bool>(vars, "ttlEnabled", ttlEnabled);
     getOptionalValue<bool>(vars, "lruEnabled", lruEnabled);
     getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "shardCount", shardCount);
     getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "maxEntries", maxEntries);
+    getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "lruDeleteUpTo", lruDeleteUpTo);
     getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "ttl", ttl);
 
-    return std::shared_ptr<cache_t>(new GenericCache<std::string, std::string>({.d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled, .d_shardCount = shardCount, .d_maxEntries = maxEntries}));
+    return std::shared_ptr<cache_t>(new GenericCache<std::string, std::string>({.d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled, .d_shardCount = shardCount, .d_maxEntries = maxEntries, .d_lruDeleteUpTo = lruDeleteUpTo}));
   });
 
   luaCtx.registerFunction<boost::optional<std::string> (std::shared_ptr<cache_t>::*)(const std::string&)>("get", [](std::shared_ptr<cache_t>& cache, const std::string& key) {
