@@ -359,6 +359,7 @@ private:
 
 class BloomFilter : public GenericFilterInterface<std::string>
 {
+public:
   struct BloomSettings
   {
     float d_fpRate{0.01};
@@ -400,28 +401,21 @@ private:
   LockGuarded<bf::stableBF> d_sbf;
 };
 
-template <size_t FingerprintBits = 8, size_t BucketSize = 4>
 class CuckooFilter : public GenericFilterInterface<std::string>
 {
+  static constexpr size_t BUCKET_SIZE = 4;
+  static constexpr size_t FINGERPRINT_BITS = 8;
+
 public:
   struct CuckooSettings
   {
     unsigned int d_maxKicks{500};
-    uint32_t d_maxEntries{10000};
+    uint32_t d_maxEntries{100000};
   };
 
   CuckooFilter(CuckooSettings settings) :
-    d_settings(settings)
+    d_settings(settings), d_numBuckets(getBucketCount(settings.d_maxEntries)), d_numBucketsMask(d_numBuckets - 1), d_buckets(d_numBuckets)
   {
-    size_t bucketCount = (settings.d_maxEntries + BucketSize - 1) / BucketSize;
-
-    d_numBuckets = 1;
-    while (d_numBuckets < bucketCount) {
-      d_numBuckets <<= 1;
-    }
-    d_numBucketsMask = d_numBuckets - 1;
-
-    d_buckets.resize(d_numBuckets);
   }
 
   virtual ~CuckooFilter() {};
@@ -480,22 +474,30 @@ public:
   }
 
 private:
-  static_assert(FingerprintBits <= 16, "Fingerprint too large");
-  static_assert(BucketSize > 0 && BucketSize <= 8, "Invalid bucket size");
-
-  using Fingerprint = typename std::conditional<FingerprintBits <= 8, uint8_t, uint16_t>::type;
+  using Fingerprint = uint8_t;
 
   static constexpr Fingerprint EMPTY_FINGERPRINT = 0;
-  static constexpr Fingerprint FINGERPRINT_MASK = (1 << FingerprintBits) - 1;
+  static constexpr Fingerprint FINGERPRINT_MASK = (1 << FINGERPRINT_BITS) - 1;
+
+  static size_t getBucketCount(size_t maxEntries)
+  {
+    size_t bucketCount = (maxEntries + BUCKET_SIZE - 1) / BUCKET_SIZE;
+
+    size_t numBuckets = 1;
+    while (numBuckets < bucketCount) {
+      numBuckets <<= 1;
+    }
+    return numBuckets;
+  }
 
   struct Bucket
   {
-    std::atomic<Fingerprint> fingerprints[BucketSize];
+    std::atomic<Fingerprint> fingerprints[BUCKET_SIZE];
     mutable std::shared_mutex mutex; // Fine-grained locking per bucket
 
     Bucket()
     {
-      for (size_t i = 0; i < BucketSize; ++i) {
+      for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         fingerprints[i].store(EMPTY_FINGERPRINT, std::memory_order_relaxed);
       }
     }
@@ -503,7 +505,7 @@ private:
     // Try to insert without lock (optimistic)
     bool try_insert_optimistic(Fingerprint fp)
     {
-      for (size_t i = 0; i < BucketSize; ++i) {
+      for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         Fingerprint expected = EMPTY_FINGERPRINT;
         if (fingerprints[i].compare_exchange_weak(expected, fp,
                                                   std::memory_order_acq_rel, std::memory_order_acquire)) {
@@ -517,7 +519,7 @@ private:
     bool insert_with_lock(Fingerprint fp)
     {
       std::unique_lock<std::shared_mutex> lock(mutex);
-      for (size_t i = 0; i < BucketSize; ++i) {
+      for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         if (fingerprints[i].load(std::memory_order_acquire) == EMPTY_FINGERPRINT) {
           fingerprints[i].store(fp, std::memory_order_release);
           return true;
@@ -530,7 +532,7 @@ private:
     bool contains(Fingerprint fp) const
     {
       // First try optimistic read
-      for (size_t i = 0; i < BucketSize; ++i) {
+      for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         if (fingerprints[i].load(std::memory_order_acquire) == fp) {
           return true;
         }
@@ -542,7 +544,7 @@ private:
     bool remove(Fingerprint fp)
     {
       std::unique_lock<std::shared_mutex> lock(mutex);
-      for (size_t i = 0; i < BucketSize; ++i) {
+      for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         if (fingerprints[i].load(std::memory_order_acquire) == fp) {
           fingerprints[i].store(EMPTY_FINGERPRINT, std::memory_order_release);
           return true;
@@ -555,14 +557,14 @@ private:
     Fingerprint kick_random(Fingerprint new_fp, std::mt19937& rng)
     {
       std::unique_lock<std::shared_mutex> lock(mutex);
-      size_t pos = rng() % BucketSize;
+      size_t pos = rng() % BUCKET_SIZE;
       Fingerprint old_fp = fingerprints[pos].exchange(new_fp, std::memory_order_acq_rel);
       return old_fp;
     }
 
     bool is_full() const
     {
-      for (size_t i = 0; i < BucketSize; ++i) {
+      for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         if (fingerprints[i].load(std::memory_order_acquire) == EMPTY_FINGERPRINT) {
           return false;
         }
@@ -625,9 +627,9 @@ private:
     return (index ^ (bucket & d_numBucketsMask)) & d_numBucketsMask;
   }
 
+  CuckooSettings d_settings;
   size_t d_numBuckets;
   size_t d_numBucketsMask;
   std::vector<Bucket> d_buckets;
   std::mt19937 d_gen;
-  CuckooSettings d_settings;
 };

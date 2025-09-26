@@ -64,6 +64,7 @@ AC_CHECK_FUNCS_ONCE([localtime_r gmtime_r])
 AC_CHECK_FUNCS_ONCE([getrandom getentropy arc4random arc4random_uniform arc4random_buf])
 AC_SUBST([YAHTTP_CFLAGS], ['-I$(top_srcdir)/ext/yahttp'])
 AC_SUBST([YAHTTP_LIBS], ['$(top_builddir)/ext/yahttp/yahttp/libyahttp.la'])
+AC_SUBST([PROBDS_LIBS], ['$(top_builddir)/ext/probds/libprobds.la'])
 AC_SUBST([IPCRYPT_CFLAGS], ['-I$(top_srcdir)/ext/ipcrypt'])
 AC_SUBST([IPCRYPT_LIBS], ['$(top_builddir)/ext/ipcrypt/libipcrypt.la'])
 AC_SUBST([ARC4RANDOM_LIBS], ['$(top_builddir)/ext/arc4random/libarc4random.la'])
@@ -204,6 +205,7 @@ AC_CONFIG_FILES([Makefile
         dnsdist-rust-lib/Makefile
         dnsdist-rust-lib/rust/Makefile
         ext/arc4random/Makefile
+        ext/probds/Makefile
         ext/yahttp/Makefile
         ext/yahttp/yahttp/Makefile
         ext/ipcrypt/Makefile])

@@ -25,6 +25,7 @@
 #include <memory>
 
 using cache_t = GenericCacheInterface<std::string, std::string>;
+using filter_t = GenericFilterInterface<std::string>;
 
 void setupLuaBindingsCache(LuaContext& luaCtx)
 {
@@ -45,6 +46,22 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     return std::shared_ptr<cache_t>(new GenericCache<std::string, std::string>({.d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled, .d_shardCount = shardCount, .d_maxEntries = maxEntries, .d_lruDeleteUpTo = lruDeleteUpTo}));
   });
 
+  luaCtx.writeFunction("newBloomFilter", [](boost::optional<LuaAssociativeTable<boost::variant<std::string>>> vars) {
+    unsigned int maxEntries{67108864};
+    getOptionalIntegerValue<unsigned int>("newBloomFilter", vars, "maxEntries", maxEntries);
+
+    return std::shared_ptr<filter_t>(new BloomFilter({.d_numCells = maxEntries}));
+  });
+
+  luaCtx.writeFunction("newCuckooFilter", [](boost::optional<LuaAssociativeTable<boost::variant<std::string>>> vars) {
+    unsigned int maxEntries{100000};
+    unsigned int maxKicks{500};
+    getOptionalIntegerValue<unsigned int>("newCuckooFilter", vars, "maxEntries", maxEntries);
+    getOptionalIntegerValue<unsigned int>("newCuckooFilter", vars, "maxKicks", maxKicks);
+
+    return std::shared_ptr<filter_t>(new CuckooFilter({.d_maxKicks = maxKicks, .d_maxEntries = maxEntries}));
+  });
+
   luaCtx.registerFunction<boost::optional<std::string> (std::shared_ptr<cache_t>::*)(const std::string&)>("get", [](std::shared_ptr<cache_t>& cache, const std::string& key) {
     boost::optional<std::string> result{boost::none};
     if (!cache) {
@@ -59,7 +76,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     return result;
   });
 
-  luaCtx.registerFunction<bool (std::shared_ptr<cache_t>::*)(const std::string&)>("contains", [](std::shared_ptr<cache_t>& cache, const std::string& key) {
+  luaCtx.registerFunction<bool (std::shared_ptr<filter_t>::*)(const std::string&)>("contains", [](std::shared_ptr<filter_t>& cache, const std::string& key) {
     if (!cache) {
       return false;
     }
@@ -75,7 +92,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     cache->insert(key, value);
   });
 
-  luaCtx.registerFunction<void (std::shared_ptr<cache_t>::*)(const std::string&)>("insertKey", [](std::shared_ptr<cache_t>& cache, const std::string& key) {
+  luaCtx.registerFunction<void (std::shared_ptr<filter_t>::*)(const std::string&)>("insertKey", [](std::shared_ptr<filter_t>& cache, const std::string& key) {
     if (!cache) {
       return;
     }
@@ -83,7 +100,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     cache->insertKey(key);
   });
 
-  luaCtx.registerFunction<void (std::shared_ptr<cache_t>::*)(const int&)>("purgeExpired", [](std::shared_ptr<cache_t>& cache, const int& upTo) {
+  luaCtx.registerFunction<void (std::shared_ptr<filter_t>::*)(const int&)>("purgeExpired", [](std::shared_ptr<filter_t>& cache, const int& upTo) {
     if (!cache) {
       return;
     }
@@ -92,7 +109,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     cache->purgeExpired(upTo, time);
   });
 
-  luaCtx.registerFunction<void (std::shared_ptr<cache_t>::*)(boost::optional<int>)>("expunge", [](std::shared_ptr<cache_t>& cache, boost::optional<int> upTo) {
+  luaCtx.registerFunction<void (std::shared_ptr<filter_t>::*)(boost::optional<int>)>("expunge", [](std::shared_ptr<filter_t>& cache, boost::optional<int> upTo) {
     if (!cache) {
       return;
     }
