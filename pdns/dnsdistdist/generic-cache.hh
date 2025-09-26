@@ -38,13 +38,14 @@
 #include "lock.hh"
 #include "noinitvector.hh"
 #include "ext/probds/murmur3.h"
+#include "stable-bloom.hh"
 
 using namespace ::boost::multi_index;
 
 class GenericExpiringCacheInterface
 {
 public:
-  virtual ~GenericExpiringCacheInterface(){};
+  virtual ~GenericExpiringCacheInterface() {};
   virtual size_t purgeExpired(size_t upTo, time_t now) = 0;
   virtual size_t expunge(size_t upTo = 0) = 0;
 };
@@ -53,7 +54,7 @@ template <typename K>
 class GenericFilterInterface : public GenericExpiringCacheInterface
 {
 public:
-  virtual ~GenericFilterInterface(){};
+  virtual ~GenericFilterInterface() {};
   virtual void insertKey(const K& key) = 0;
   virtual bool contains(const K& key) = 0;
 };
@@ -62,7 +63,7 @@ template <typename K, typename V>
 class GenericCacheInterface : public GenericFilterInterface<K>
 {
 public:
-  virtual ~GenericCacheInterface(){};
+  virtual ~GenericCacheInterface() {};
   virtual void insert(const K& key, V value) = 0;
   virtual bool getValue(const K& key, V& value) = 0;
 };
@@ -93,7 +94,7 @@ public:
     d_settings(settings), d_shards(settings.d_shardCount)
   {
   }
-  virtual ~GenericCache(){};
+  virtual ~GenericCache() {};
 
   void insert(const K& key, V value) override
   {
@@ -356,6 +357,49 @@ private:
   std::vector<CacheShard> d_shards;
 };
 
+class BloomFilter : public GenericFilterInterface<std::string>
+{
+  struct BloomSettings
+  {
+    float d_fpRate{0.01};
+    size_t d_numCells{67108864};
+    size_t d_numDec{10};
+  };
+
+  BloomFilter(BloomSettings settings) :
+    d_settings(settings), d_sbf(bf::stableBF(settings.d_fpRate, settings.d_numCells, settings.d_numDec))
+  {
+  }
+
+  virtual ~BloomFilter() {};
+
+  void insertKey(const std::string& key) override
+  {
+    d_sbf.lock()->add(key);
+  }
+
+  bool contains(const std::string& key) override
+  {
+    return d_sbf.lock()->test(key);
+  }
+
+  size_t purgeExpired(size_t upTo, time_t now) override
+  {
+    // Unsupported
+    return 0;
+  }
+
+  size_t expunge(size_t upTo = 0) override
+  {
+    // Unsupported
+    return 0;
+  }
+
+private:
+  BloomSettings d_settings;
+  LockGuarded<bf::stableBF> d_sbf;
+};
+
 template <size_t FingerprintBits = 8, size_t BucketSize = 4>
 class CuckooFilter : public GenericFilterInterface<std::string>
 {
@@ -380,7 +424,7 @@ public:
     d_buckets.resize(d_numBuckets);
   }
 
-  virtual ~CuckooFilter(){};
+  virtual ~CuckooFilter() {};
 
   void insertKey(const std::string& key) override
   {
