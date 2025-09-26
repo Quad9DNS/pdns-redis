@@ -44,19 +44,19 @@ void setupLuaBindingsKVS([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] b
 #endif /* HAVE_CDB */
 
 #ifdef HAVE_REDIS
-  luaCtx.writeFunction("newRedisKVStore", [client](const std::shared_ptr<RedisClient>& redisClient, boost::optional<LuaAssociativeTable<boost::variant<std::string, bool, std::shared_ptr<GenericCacheInterface<std::string, std::string>>, std::shared_ptr<GenericFilterInterface<std::string>>>>> vars) {
+  luaCtx.writeFunction("newRedisKVStore", [client](const std::shared_ptr<RedisClient>& redisClient, boost::optional<LuaAssociativeTable<boost::variant<std::string, bool, std::shared_ptr<GenericCacheInterface<std::string, std::string>>>>> vars) {
     if (client) {
       return std::shared_ptr<KeyValueStore>(nullptr);
     }
 
     std::shared_ptr<GenericCacheInterface<std::string, std::string>> resultCache;
-    std::shared_ptr<GenericFilterInterface<std::string>> negativeCache;
+    std::shared_ptr<GenericCacheInterface<std::string, std::string>> negativeCache;
     bool copyCacheEnabled{false};
     unsigned int copyCacheTtl;
     boost::optional<std::string> lookupAction;
     boost::optional<std::string> dataName;
     getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "resultCache", resultCache);
-    getOptionalValue<std::shared_ptr<GenericFilterInterface<std::string>>>(vars, "negativeCache", negativeCache);
+    getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "negativeCache", negativeCache);
     getOptionalValue<bool>(vars, "copyCacheEnabled", copyCacheEnabled);
     getOptionalIntegerValue<unsigned int>("newRedisKVStore", vars, "copyCacheTtl", copyCacheTtl);
     getOptionalValue<std::string>(vars, "dataName", dataName);

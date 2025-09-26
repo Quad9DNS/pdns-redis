@@ -357,7 +357,7 @@ private:
   std::vector<CacheShard> d_shards;
 };
 
-class BloomFilter : public GenericFilterInterface<std::string>
+class BloomFilter : public GenericCacheInterface<std::string, std::string>
 {
 public:
   struct BloomSettings
@@ -379,18 +379,28 @@ public:
     d_sbf.lock()->add(key);
   }
 
+  void insert(const std::string& key, [[maybe_unused]] std::string value) override
+  {
+    insertKey(key);
+  }
+
   bool contains(const std::string& key) override
   {
     return d_sbf.lock()->test(key);
   }
 
-  size_t purgeExpired(size_t upTo, time_t now) override
+  bool getValue(const std::string& key, [[maybe_unused]] std::string& value) override
+  {
+    return contains(key);
+  }
+
+  size_t purgeExpired([[maybe_unused]] size_t upTo, [[maybe_unused]] time_t now) override
   {
     // Unsupported
     return 0;
   }
 
-  size_t expunge(size_t upTo = 0) override
+  size_t expunge([[maybe_unused]] size_t upTo = 0) override
   {
     // Unsupported
     return 0;
@@ -401,7 +411,7 @@ private:
   LockGuarded<bf::stableBF> d_sbf;
 };
 
-class CuckooFilter : public GenericFilterInterface<std::string>
+class CuckooFilter : public GenericCacheInterface<std::string, std::string>
 {
   static constexpr size_t BUCKET_SIZE = 4;
   static constexpr size_t FINGERPRINT_BITS = 8;
@@ -453,6 +463,11 @@ public:
     return; // Filter is full
   }
 
+  void insert(const std::string& key, [[maybe_unused]] std::string value) override
+  {
+    insertKey(key);
+  }
+
   bool contains(const std::string& key) override
   {
     auto [i1, i2] = get_indices_and_fingerprint(key);
@@ -463,13 +478,20 @@ public:
     return d_buckets[i1].contains(fp) || d_buckets[i2].contains(fp);
   }
 
-  size_t purgeExpired(size_t upTo, time_t now) override
+  bool getValue(const std::string& key, [[maybe_unused]] std::string& value) override
   {
+    return contains(key);
+  }
+
+  size_t purgeExpired([[maybe_unused]] size_t upTo, [[maybe_unused]] time_t now) override
+  {
+    // TODO
     return 0;
   }
 
-  size_t expunge(size_t upTo = 0) override
+  size_t expunge([[maybe_unused]] size_t upTo = 0) override
   {
+    // TODO
     return 0;
   }
 
