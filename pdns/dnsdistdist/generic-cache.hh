@@ -22,6 +22,7 @@
 #pragma once
 
 #include <atomic>
+#include <boost/dynamic_bitset.hpp>
 #include <boost/multi_index/hashed_index.hpp>
 #include <boost/multi_index_container.hpp>
 #include <boost/multi_index/ordered_index.hpp>
@@ -30,17 +31,20 @@
 #include <stdexcept>
 #include <type_traits>
 #include <vector>
+#include <random>
 
 #include "cachecleaner.hh"
 #include "gettime.hh"
 #include "lock.hh"
+#include "noinitvector.hh"
+#include "ext/probds/murmur3.h"
 
 using namespace ::boost::multi_index;
 
 class GenericExpiringCacheInterface
 {
 public:
-  virtual ~GenericExpiringCacheInterface() {};
+  virtual ~GenericExpiringCacheInterface(){};
   virtual size_t purgeExpired(size_t upTo, time_t now) = 0;
   virtual size_t expunge(size_t upTo = 0) = 0;
 };
@@ -49,7 +53,7 @@ template <typename K>
 class GenericFilterInterface : public GenericExpiringCacheInterface
 {
 public:
-  virtual ~GenericFilterInterface() {};
+  virtual ~GenericFilterInterface(){};
   virtual void insertKey(const K& key) = 0;
   virtual bool contains(const K& key) = 0;
 };
@@ -58,7 +62,7 @@ template <typename K, typename V>
 class GenericCacheInterface : public GenericFilterInterface<K>
 {
 public:
-  virtual ~GenericCacheInterface() {};
+  virtual ~GenericCacheInterface(){};
   virtual void insert(const K& key, V value) = 0;
   virtual bool getValue(const K& key, V& value) = 0;
 };
@@ -89,7 +93,7 @@ public:
     d_settings(settings), d_shards(settings.d_shardCount)
   {
   }
-  virtual ~GenericCache() {};
+  virtual ~GenericCache(){};
 
   void insert(const K& key, V value) override
   {
@@ -350,4 +354,236 @@ private:
 
   CacheSettings d_settings;
   std::vector<CacheShard> d_shards;
+};
+
+template <size_t FingerprintBits = 8, size_t BucketSize = 4>
+class CuckooFilter : public GenericFilterInterface<std::string>
+{
+public:
+  struct CuckooSettings
+  {
+    unsigned int d_maxKicks{500};
+    uint32_t d_maxEntries{10000};
+  };
+
+  CuckooFilter(CuckooSettings settings) :
+    d_settings(settings)
+  {
+    size_t bucketCount = (settings.d_maxEntries + BucketSize - 1) / BucketSize;
+
+    d_numBuckets = 1;
+    while (d_numBuckets < bucketCount) {
+      d_numBuckets <<= 1;
+    }
+    d_numBucketsMask = d_numBuckets - 1;
+
+    d_buckets.resize(d_numBuckets);
+  }
+
+  virtual ~CuckooFilter(){};
+
+  void insertKey(const std::string& key) override
+  {
+    auto [i1, i2] = get_indices_and_fingerprint(key);
+    Fingerprint fp = static_cast<Fingerprint>(murmur_hash(key) & FINGERPRINT_MASK);
+    if (fp == EMPTY_FINGERPRINT)
+      fp = 1;
+
+    // Try optimistic insert in both buckets
+    if (d_buckets[i1].try_insert_optimistic(fp) || d_buckets[i2].try_insert_optimistic(fp)) {
+      return;
+    }
+
+    // Try with locks
+    if (d_buckets[i1].insert_with_lock(fp) || d_buckets[i2].insert_with_lock(fp)) {
+      return;
+    }
+
+    // Cuckoo eviction
+    size_t cur_index = i1;
+    Fingerprint cur_fp = fp;
+
+    for (size_t kick = 0; kick < d_settings.d_maxKicks; ++kick) {
+      cur_fp = d_buckets[cur_index].kick_random(cur_fp, d_gen);
+      cur_index = alt_index(cur_index, cur_fp);
+
+      if (d_buckets[cur_index].try_insert_optimistic(cur_fp) || d_buckets[cur_index].insert_with_lock(cur_fp)) {
+        return;
+      }
+    }
+
+    return; // Filter is full
+  }
+
+  bool contains(const std::string& key) override
+  {
+    auto [i1, i2] = get_indices_and_fingerprint(key);
+    Fingerprint fp = static_cast<Fingerprint>(murmur_hash(key) & FINGERPRINT_MASK);
+    if (fp == EMPTY_FINGERPRINT)
+      fp = 1;
+
+    return d_buckets[i1].contains(fp) || d_buckets[i2].contains(fp);
+  }
+
+  size_t purgeExpired(size_t upTo, time_t now) override
+  {
+    return 0;
+  }
+
+  size_t expunge(size_t upTo = 0) override
+  {
+    return 0;
+  }
+
+private:
+  static_assert(FingerprintBits <= 16, "Fingerprint too large");
+  static_assert(BucketSize > 0 && BucketSize <= 8, "Invalid bucket size");
+
+  using Fingerprint = typename std::conditional<FingerprintBits <= 8, uint8_t, uint16_t>::type;
+
+  static constexpr Fingerprint EMPTY_FINGERPRINT = 0;
+  static constexpr Fingerprint FINGERPRINT_MASK = (1 << FingerprintBits) - 1;
+
+  struct Bucket
+  {
+    std::atomic<Fingerprint> fingerprints[BucketSize];
+    mutable std::shared_mutex mutex; // Fine-grained locking per bucket
+
+    Bucket()
+    {
+      for (size_t i = 0; i < BucketSize; ++i) {
+        fingerprints[i].store(EMPTY_FINGERPRINT, std::memory_order_relaxed);
+      }
+    }
+
+    // Try to insert without lock (optimistic)
+    bool try_insert_optimistic(Fingerprint fp)
+    {
+      for (size_t i = 0; i < BucketSize; ++i) {
+        Fingerprint expected = EMPTY_FINGERPRINT;
+        if (fingerprints[i].compare_exchange_weak(expected, fp,
+                                                  std::memory_order_acq_rel, std::memory_order_acquire)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Insert with shared lock
+    bool insert_with_lock(Fingerprint fp)
+    {
+      std::unique_lock<std::shared_mutex> lock(mutex);
+      for (size_t i = 0; i < BucketSize; ++i) {
+        if (fingerprints[i].load(std::memory_order_acquire) == EMPTY_FINGERPRINT) {
+          fingerprints[i].store(fp, std::memory_order_release);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Lookup with minimal locking
+    bool contains(Fingerprint fp) const
+    {
+      // First try optimistic read
+      for (size_t i = 0; i < BucketSize; ++i) {
+        if (fingerprints[i].load(std::memory_order_acquire) == fp) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Remove with lock
+    bool remove(Fingerprint fp)
+    {
+      std::unique_lock<std::shared_mutex> lock(mutex);
+      for (size_t i = 0; i < BucketSize; ++i) {
+        if (fingerprints[i].load(std::memory_order_acquire) == fp) {
+          fingerprints[i].store(EMPTY_FINGERPRINT, std::memory_order_release);
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // For cuckoo eviction - returns evicted fingerprint
+    Fingerprint kick_random(Fingerprint new_fp, std::mt19937& rng)
+    {
+      std::unique_lock<std::shared_mutex> lock(mutex);
+      size_t pos = rng() % BucketSize;
+      Fingerprint old_fp = fingerprints[pos].exchange(new_fp, std::memory_order_acq_rel);
+      return old_fp;
+    }
+
+    bool is_full() const
+    {
+      for (size_t i = 0; i < BucketSize; ++i) {
+        if (fingerprints[i].load(std::memory_order_acquire) == EMPTY_FINGERPRINT) {
+          return false;
+        }
+      }
+      return true;
+    }
+  };
+
+  static constexpr uint64_t FNV_OFFSET_BASIS = 14695981039346656037ULL;
+  static constexpr uint64_t FNV_PRIME = 1099511628211ULL;
+
+  static uint64_t fnv1a_hash(const std::string& data)
+  {
+    uint64_t hash = FNV_OFFSET_BASIS;
+    const char* bytes = data.data();
+    for (size_t i = 0; i < data.length(); ++i) {
+      hash ^= bytes[i];
+      hash *= FNV_PRIME;
+    }
+    return hash;
+  }
+
+  // Hash and fingerprint calculation
+  std::pair<size_t, size_t> get_indices_and_fingerprint(const std::string& data) const
+  {
+    uint64_t hash = fnv1a_hash(data);
+    uint32_t fingerprint_raw = murmur_hash(data);
+
+    Fingerprint fp = static_cast<Fingerprint>((fingerprint_raw & FINGERPRINT_MASK));
+    if (fp == EMPTY_FINGERPRINT)
+      fp = 1; // Avoid empty fingerprint
+
+    uint32_t bucket = murmur_hash(std::to_string(fp), 1);
+    size_t i1 = hash & d_numBucketsMask;
+    size_t i2 = (i1 ^ (bucket & d_numBucketsMask)) & d_numBucketsMask;
+
+    return {i1, i2};
+  }
+
+  uint32_t murmur_hash(const std::string& data, const uint32_t seed = 0x9747b28c) const
+  {
+    uint32_t hash{};
+    // MurmurHash3 assumes the data is uint32_t aligned, so fixup if needed
+    // It does handle string lengths that are not a multiple of sizeof(uint32_t) correctly
+    if (reinterpret_cast<uintptr_t>(data.data()) % sizeof(uint32_t) != 0) { // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+      NoInitVector<uint32_t> vec((data.length() / sizeof(uint32_t)) + 1);
+      memcpy(vec.data(), data.data(), data.length());
+      MurmurHash3_x86_32(vec.data(), static_cast<int>(data.length()), seed, &hash);
+    }
+    else {
+      MurmurHash3_x86_32(data.data(), static_cast<int>(data.length()), seed, &hash);
+    }
+
+    return hash;
+  }
+
+  size_t alt_index(size_t index, Fingerprint fp) const
+  {
+    uint32_t bucket = murmur_hash(std::to_string(fp), 1);
+    return (index ^ (bucket & d_numBucketsMask)) & d_numBucketsMask;
+  }
+
+  size_t d_numBuckets;
+  size_t d_numBucketsMask;
+  std::vector<Bucket> d_buckets;
+  std::mt19937 d_gen;
+  CuckooSettings d_settings;
 };
