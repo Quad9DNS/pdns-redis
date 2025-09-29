@@ -84,9 +84,9 @@ BOOST_AUTO_TEST_CASE(test_record_types) {
 // non-local name
      (CASE_S(QType::PTR, "ptr.example.com.", "\x03ptr\x07""example\x03""com\x00"))
      (CASE_S(QType::HINFO, "\"i686\" \"Linux\"", "\x04i686\x05Linux"))
-     (BROKEN_CASE_L(QType::HINFO, "i686 \"Linux\"", "\"i686\" \"Linux\"", "\x04i686\x05Linux"))
+     (CASE_L(QType::HINFO, "i686 \"Linux\"", "\"i686\" \"Linux\"", "\x04i686\x05Linux"))
      (CASE_L(QType::HINFO, "\"i686\" Linux", "\"i686\" \"Linux\"", "\x04i686\x05Linux"))
-     (BROKEN_CASE_L(QType::HINFO, "i686 Linux", "\"i686\" \"Linux\"", "\x04i686\x05Linux"))
+     (CASE_L(QType::HINFO, "i686 Linux", "\"i686\" \"Linux\"", "\x04i686\x05Linux"))
 // local name
      (CASE_S(QType::MX, "10 mx.rec.test.", "\x00\x0a\x02mx\xc0\x11"))
 // non-local name
@@ -100,7 +100,6 @@ BOOST_AUTO_TEST_CASE(test_record_types) {
      (CASE_S(QType::TXT,  "\"\\195\\133LAND ISLANDS\"", "\x0e\xc3\x85LAND ISLANDS"))
      (CASE_S(QType::TXT,  "\"text with DEL in there: \\127\"", "\x19text with DEL in there: \x7f"))
      (CASE_L(QType::TXT, "\"\xc3\x85LAND ISLANDS\"", "\"\\195\\133LAND ISLANDS\"", "\x0e\xc3\x85LAND ISLANDS"))
-     (CASE_S(QType::TXT, "\"nonbreakingtxt\"", "\x0enonbreakingtxt"))
 // local name
      (CASE_S(QType::RP, "admin.rec.test. admin-info.rec.test.", "\x05""admin\x03rec\x04test\x00\x0a""admin-info\x03rec\x04test\x00"))
 // non-local name
@@ -260,6 +259,11 @@ BOOST_AUTO_TEST_CASE(test_record_types) {
      (CASE_L(QType::SVCB, R"XXX(16 foo.example.org. alpn=f\\\092oo\092,bar,h2)XXX", R"XXX(16 foo.example.org. alpn=f\\\\oo\\,bar,h2)XXX", "\x00\x10\3foo\7example\3org\x00\x00\x01\x00\x0c\x08\x66\\oo,bar\x02h2"))
      // END SVCB draft test vectors
 
+     (CASE_S(QType::HHIT, "1234abcd", "\xd7\x6d\xf8\x69\xb7\x1d"))
+     (CASE_L(QType::HHIT, "1234 abcd", "1234abcd", "\xd7\x6d\xf8\x69\xb7\x1d"))
+     (CASE_S(QType::BRID, "1234abcd", "\xd7\x6d\xf8\x69\xb7\x1d"))
+     (CASE_L(QType::BRID, "1234 abcd", "1234abcd", "\xd7\x6d\xf8\x69\xb7\x1d"))
+
      (CASE_S(QType::SPF, "\"v=spf1 a:mail.rec.test ~all\"", "\x1bv=spf1 a:mail.rec.test ~all"))
 
      (CASE_S(QType::NID, "15 0123:4567:89AB:CDEF", "\x00\x0F\x01\x23\x45\x67\x89\xab\xcd\xef"))
@@ -384,6 +388,8 @@ BOOST_AUTO_TEST_CASE(test_record_types_bad_values) {
 // non-local overly large name (256), must be broken
      (ZONE_CASE(QType::CNAME, "123456789012345678901234567890123456789012345678901234567890123.123456789012345678901234567890123456789012345678901234567890123.123456789012345678901234567890123456789012345678901234567890123.12345678901234567890123456789012345678901234567890123456789012."))
      (ZONE_CASE(QType::SOA, "ns.rec.test hostmaster.test.rec 20130512010 3600 3600 604800 120")) // too long serial
+     (ZONE_CASE(QType::TXT, "\\02unlimited")) // incorrect escape
+     (ZONE_CASE(QType::TXT, "\\384excessive")) // incorrect escape
 ;
 
   int n=0;

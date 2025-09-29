@@ -8,8 +8,25 @@ Please upgrade to the PowerDNS Authoritative Server 4.0.0 from 3.4.2+.
 See the `3.X <https://doc.powerdns.com/3/authoritative/upgrading/>`__
 upgrade notes if your version is older than 3.4.2.
 
-4.9.0 to 5.0.0/master
----------------------
+5.0.0 to 5.1.0
+--------------
+
+zone display
+^^^^^^^^^^^^
+
+Display of records in various :doc:`pdnsutil <manpages/pdnsutil.1>` commands
+will now always contain explicit trailing dots, for consistency.
+
+Record handling in the API
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Record data sent through the API will now be normalized to be closer to their
+actual zone representation.
+As a result of this change, reading back these records may show a different
+representation than expected.
+
+4.9.0 to 5.0.0
+--------------
 
 LMDB backend, views
 ^^^^^^^^^^^^^^^^^^^
@@ -22,7 +39,7 @@ Upgrading is supported from schema version 3 and up.
 
 The implementation of views involved a massive refactoring of many parts of the code base.
 While many things have been thoroughly tested, some loose ends likely remain.
-Specifically, catalog zones have not been updated for views support at all.
+Catalog zones support for views is limited, see :ref:`views-catalog-zones`.
 Most other things are expected to work; if you find something wrong, please :ref:`let us know <getting-support>`.
 
 LMDB backend, DNS Update support
@@ -220,7 +237,8 @@ A few changes of behaviour have been implemented as well:
   ``zone create-secondary`` or ``zone load`` (if the zone wasn't existing
   already), a :ref:`metadata-soa-edit-api` metadata with a value of ``DEFAULT``
   will be added to the zone.
-* ``add-record`` and ``delete-rrset`` now treat all names as absolute.
+* ``add-record`` and ``delete-rrset`` now treat all names as absolute. This
+  means the name ``@`` no longer has any special meaning.
 
 4.8.0 to 4.9.0
 --------------

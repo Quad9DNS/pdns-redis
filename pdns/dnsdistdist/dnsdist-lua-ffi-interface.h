@@ -247,6 +247,10 @@ uint32_t dnsdist_ffi_dnspacket_get_record_ttl(const dnsdist_ffi_dnspacket_t* pac
 uint16_t dnsdist_ffi_dnspacket_get_record_content_length(const dnsdist_ffi_dnspacket_t* packet, size_t idx) __attribute__ ((visibility ("default")));
 uint16_t dnsdist_ffi_dnspacket_get_record_content_offset(const dnsdist_ffi_dnspacket_t* packet, size_t idx) __attribute__ ((visibility ("default")));
 size_t dnsdist_ffi_dnspacket_get_name_at_offset_raw(const char* packet, size_t packetSize, size_t offset, char* name, size_t nameSize) __attribute__ ((visibility ("default")));
+bool dnsdist_ffi_dnspacket_parse_a_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* addr, size_t* addrSize) __attribute__ ((visibility ("default")));
+bool dnsdist_ffi_dnspacket_parse_aaaa_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* addr, size_t* addrSize) __attribute__ ((visibility ("default")));
+bool dnsdist_ffi_dnspacket_parse_address_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* addr, size_t* addrSize) __attribute__ ((visibility ("default")));
+bool dnsdist_ffi_dnspacket_parse_cname_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* name, size_t* nameSize) __attribute__ ((visibility ("default")));
 void dnsdist_ffi_dnspacket_free(dnsdist_ffi_dnspacket_t*) __attribute__ ((visibility ("default")));
 
 bool dnsdist_ffi_metric_declare(const char* name, size_t nameLen, const char* type, const char* description, const char* customName) __attribute__ ((visibility ("default")));
@@ -315,3 +319,12 @@ void dnsdist_ffi_dnsquestion_meta_add_str_value_to_key(dnsdist_ffi_dnsquestion_t
 void dnsdist_ffi_dnsquestion_meta_add_int64_value_to_key(dnsdist_ffi_dnsquestion_t* dnsQuestion, int64_t value) __attribute__ ((visibility ("default")));
 /* this function should never be called if dnsdist_ffi_dnsquestion_meta_begin_key has not been called first */
 void dnsdist_ffi_dnsquestion_meta_end_key(dnsdist_ffi_dnsquestion_t* dnsQuestion) __attribute__ ((visibility ("default")));
+
+/* this function adds a new key to the raw meta buffer. It can only be called with the same key on a given query once, and dnsdist_ffi_dnsresponse_meta_end_key should always be called after values have been added */
+void dnsdist_ffi_dnsresponse_meta_begin_key(dnsdist_ffi_dnsresponse_t* dnsResponse, const char* key, size_t keyLen) __attribute__ ((visibility ("default")));
+/* this function should never be called if dnsdist_ffi_dnsresponse_meta_begin_key has not been called first */
+void dnsdist_ffi_dnsresponse_meta_add_str_value_to_key(dnsdist_ffi_dnsresponse_t* dnsResponse, const char* value, size_t valueLen) __attribute__ ((visibility ("default")));
+/* this function should never be called if dnsdist_ffi_dnsresponse_meta_begin_key has not been called first */
+void dnsdist_ffi_dnsresponse_meta_add_int64_value_to_key(dnsdist_ffi_dnsresponse_t* dnsResponse, int64_t value) __attribute__ ((visibility ("default")));
+/* this function should never be called if dnsdist_ffi_dnsresponse_meta_begin_key has not been called first */
+void dnsdist_ffi_dnsresponse_meta_end_key(dnsdist_ffi_dnsresponse_t* dnsResponse) __attribute__ ((visibility ("default")));

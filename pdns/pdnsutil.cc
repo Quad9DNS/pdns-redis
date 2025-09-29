@@ -1,48 +1,46 @@
-#include "dnsname.hh"
-#include "dnsparser.hh"
-#include "dnsrecords.hh"
-#include "iputils.hh"
-#include "qtype.hh"
-#include <boost/smart_ptr/make_shared_array.hpp>
+#include <cerrno>
+#include <csignal>
+#include <fcntl.h>
+#include <fstream>
+#include <termios.h>            //termios, TCSANOW, ECHO, ICANON
+#include <utility>
+#include <sys/stat.h>
+#include <sys/wait.h>
+
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
 
-#include <fcntl.h>
-#include <csignal>
-#include <sys/wait.h>
-
-#include "credentials.hh"
-#include "dnsseckeeper.hh"
-#include "dnssecinfra.hh"
-#include "statbag.hh"
-#include "base32.hh"
-#include "base64.hh"
-#include "dns.hh"
-
 #include <boost/program_options.hpp>
-#include <boost/assign/std/vector.hpp>
-#include <boost/assign/list_of.hpp>
-#include "json11.hpp"
-#include "tsigutils.hh"
-#include "dnsbackend.hh"
-#include "ueberbackend.hh"
+
 #include "arguments.hh"
 #include "auth-packetcache.hh"
 #include "auth-querycache.hh"
 #include "auth-zonecache.hh"
-#include "zoneparser-tng.hh"
-#include "signingpipe.hh"
+#include "base32.hh"
+#include "base64.hh"
+#include "check-zone.hh"
+#include "credentials.hh"
+#include "dns.hh"
 #include "dns_random.hh"
+#include "dnsbackend.hh"
+#include "dnsname.hh"
+#include "dnsparser.hh"
+#include "dnsrecords.hh"
+#include "dnssecinfra.hh"
+#include "dnsseckeeper.hh"
 #include "ipcipher.hh"
+#include "iputils.hh"
+#include "json11.hpp"
 #include "misc.hh"
-#include "zonemd.hh"
-#include <fstream>
-#include <utility>
-#include <cerrno>
-#include <sys/stat.h>
-#include <termios.h>            //termios, TCSANOW, ECHO, ICANON
 #include "opensslsigners.hh"
+#include "qtype.hh"
+#include "signingpipe.hh"
+#include "statbag.hh"
+#include "tsigutils.hh"
+#include "ueberbackend.hh"
+#include "zonemd.hh"
+#include "zoneparser-tng.hh"
 #ifdef HAVE_LIBSODIUM
 #include <sodium.h>
 #endif
@@ -90,6 +88,7 @@ static int changeSecondaryZonePrimary(vector<string>& cmds, std::string_view syn
 static int checkAllZones(vector<string>& cmds, std::string_view synopsis);
 static int checkZone(vector<string>& cmds, std::string_view synopsis);
 static int clearZone(vector<string>& cmds, std::string_view synopsis);
+static int copyZone(vector<string>& cmds, std::string_view synopsis);
 static int createBindDb(vector<string>& cmds, std::string_view synopsis);
 static int createSecondaryZone(vector<string>& cmds, std::string_view synopsis);
 static int createZone(vector<string>& cmds, std::string_view synopsis);
@@ -339,6 +338,9 @@ static const groupCommandDispatcher zoneMainCommands{
    {"clear", {true, clearZone,
     "ZONE",
     "\tClear all records of a zone, but keep everything else"}},
+   {"copy", {true, copyZone,
+    "ZONE NEW-ZONE",
+    "\tCreate zone NEW-ZONE with the contents of ZONE"}},
    {"create", {true, createZone,
     "ZONE [NSNAME]",
     "\tCreate empty zone ZONE"}},
@@ -729,6 +731,22 @@ static int usage(const std::string_view synopsis)
   return EXIT_FAILURE;
 }
 
+// Build a string with the record textual (bind-style) representation,
+// with explicit trailing dots.
+static std::string formatRecord(const DNSRecord& rec, std::string_view separator = "\t")
+{
+  std::string ret = rec.d_name.toString();
+  ret.append(separator);
+  ret.append(std::to_string(rec.d_ttl));
+  ret.append(separator);
+  ret.append(QClass(rec.d_class).toString());
+  ret.append(separator);
+  ret.append(DNSRecordContent::NumberToType(rec.d_type));
+  ret.append(separator);
+  ret.append(rec.getContent()->getZoneRepresentation());
+  return ret;
+}
+
 static bool rectifyZone(DNSSECKeeper& dsk, const ZoneName& zone, bool quiet = false, bool rectifyTransaction = true)
 {
   string output;
@@ -781,8 +799,7 @@ static void dbBench(const std::string& fname)
     }
     // Safe to pass UnknownDomainID here
     B.lookup(QType(QType::A), DNSName(std::to_string(dns_random_uint32()))+domain, UnknownDomainID);
-    while(B.get(rr)) {
-    }
+    B.lookupEnd();
     misses++;
 
   }
@@ -810,6 +827,55 @@ static bool rectifyAllZones(DNSSECKeeper &dk, bool quiet = false)
     cout<<"Rectified "<<domainInfo.size()<<" zones."<<endl;
   }
   return result;
+}
+
+// Returns a terminal-friendly version of its input, with non-printable
+// characters replaced with hex sequences.
+// Filters fewer printable characters than makeLuaString().
+static std::string terminalSafe(const std::string& input)
+{
+  size_t toRewrite{0};
+  for (const auto& chr : input) {
+    if (::isprint(static_cast<int>(chr)) == 0) {
+      ++toRewrite;
+    }
+  }
+  if (toRewrite == 0) {
+    return input;
+  }
+  std::string output;
+  std::array<char, 5> tmp{};
+  output.reserve(input.size() + 3 * toRewrite);
+  for (const auto& chr : input) {
+    if (::isprint(static_cast<int>(chr)) != 0) {
+      output.push_back(chr);
+    }
+    else {
+      switch (chr) {
+      case '\n':
+        output.append("\\n");
+        break;
+      case '\r':
+        output.append("\\r");
+        break;
+      case '\t':
+        output.append("\\t");
+        break;
+      default:
+        snprintf(tmp.data(), tmp.size(), "\\x%02x", static_cast<int>(chr));
+        output.append(tmp.data());
+      }
+    }
+  }
+  return output;
+}
+
+static bool areUnderscoresAllowed(const ZoneName& zonename, DomainInfo& info)
+{
+  string underscores{};
+  info.backend->getDomainMetadataOne(zonename, "RFC1123-CONFORMANCE", underscores);
+  // Metadata absent implies strict conformance
+  return underscores == "0";
 }
 
 static int checkZone(DNSSECKeeper &dk, UeberBackend &B, const ZoneName& zone, const vector<DNSResourceRecord>* suppliedrecords=nullptr) // NOLINT(readability-function-cognitive-complexity,readability-identifier-length)
@@ -906,8 +972,13 @@ static int checkZone(DNSSECKeeper &dk, UeberBackend &B, const ZoneName& zone, co
       bool ns=false;
       DNSZoneRecord zr;
       B.lookup(QType(QType::ANY), zone.operator const DNSName&(), sd_p.domain_id);
-      while(B.get(zr))
-        ns |= (zr.dr.d_type == QType::NS);
+      while(B.get(zr)) {
+        if (zr.dr.d_type == QType::NS) {
+          ns = true;
+          B.lookupEnd();
+          break;
+        }
+      }
       if (!ns) {
         cout<<"[Error] No delegation for zone '"<<zone<<"' in parent '"<<parent<<"'"<<endl;
         numerrors++;
@@ -931,14 +1002,42 @@ static int checkZone(DNSSECKeeper &dk, UeberBackend &B, const ZoneName& zone, co
 
   vector<DNSResourceRecord> records;
   if(suppliedrecords == nullptr) {
+    std::vector<std::pair<std::string, std::string>> invalid;
     DNSResourceRecord drr;
     sd.db->list(zone, sd.domain_id, g_verbose);
-    while(sd.db->get(drr)) {
-      records.push_back(drr);
+    while (sd.db->get_unsafe(drr, invalid)) {
+      if (invalid.empty()) {
+        records.push_back(drr);
+        continue;
+      }
+      // Emit this alert as a warning, as this is not something which pdnsutil
+      // can fix by itself, and that record will be silently ignored during
+      // regular operation.
+      cout << "[Warning] Ill-formed ";
+      // The invalid part might be the record name itself, only output it if
+      // non-empty.
+      if (!drr.qname.empty()) {
+	cout << "'" << drr.qname << "' ";
+      }
+      cout << "record in backend storage: ";
+      bool first = true;
+      for (const auto& pair : invalid) {
+        if (first) {
+          first = false;
+        }
+        else {
+          cout << ", ";
+        }
+        cout << "field " << pair.first << " has invalid content '" << terminalSafe(pair.second) << "'";
+      }
+      cout << std::endl;
+      numwarnings++;
     }
   }
   else
     records=*suppliedrecords;
+
+  bool allowUnderscores = areUnderscoresAllowed(zone, di);
 
   for(auto &rr : records) { // we modify this
     if(rr.qtype.getCode() == QType::TLSA)
@@ -1109,7 +1208,7 @@ static int checkZone(DNSSECKeeper &dk, UeberBackend &B, const ZoneName& zone, co
 
     if (isSecure && isOptOut && (rr.qname.hasLabels() && rr.qname.getRawLabel(0) == "*")) {
       cout<<"[Warning] wildcard record '"<<rr.qname<<" IN " <<rr.qtype.toString()<<" "<<rr.content<<"' is insecure"<<endl;
-      cout<<"[Info] Wildcard records in opt-out zones are insecure. Disable the opt-out flag for this zone to avoid this warning. Command: pdnsutil set-nsec3 "<<zone<<endl;
+      cout<<"[Info] Wildcard records in opt-out zones are insecure. Disable the opt-out flag for this zone to avoid this warning. Command: 'pdnsutil zone set-nsec3 "<<zone<<"'"<<endl;
       numwarnings++;
     }
 
@@ -1151,7 +1250,7 @@ static int checkZone(DNSSECKeeper &dk, UeberBackend &B, const ZoneName& zone, co
 
     // Check if the DNSNames that should be hostnames, are hostnames
     try {
-      checkHostnameCorrectness(rr);
+      checkHostnameCorrectness(rr, allowUnderscores);
     } catch (const std::exception& e) {
       cout << "[Warning] " << rr.qtype.toString() << " record in zone '" << zone << ": " << e.what() << endl;
       numwarnings++;
@@ -1397,7 +1496,7 @@ static int checkZone(DNSSECKeeper &dk, UeberBackend &B, const ZoneName& zone, co
       numwarnings++;
     }
     if( ! ok && suppliedrecords == nullptr ) {
-      cout << "[Error] Following record is auth=" << rr.auth << ", run pdnsutil rectify-zone?: " << rr.qname << " IN " << rr.qtype.toString() << " " << rr.content << endl;
+      cout << "[Error] Following record is auth=" << rr.auth << ", run 'pdnsutil zone rectify'?: " << rr.qname << " IN " << rr.qtype.toString() << " " << rr.content << endl;
       numerrors++;
     }
   }
@@ -1670,27 +1769,20 @@ static int listZone(const ZoneName &zone) {
     return EXIT_FAILURE;
   }
 
-  di.backend->list(zone, di.id);
+  std::vector<DNSRecord> records;
   DNSResourceRecord rr;
+
+  di.backend->list(zone, di.id);
+  while(di.backend->get(rr)) {
+    if(rr.qtype.getCode() != QType::ENT) {
+      records.emplace_back(DNSRecord(rr));
+    }
+  }
+  sort(records.begin(), records.end(), DNSRecord::prettyCompare);
   cout<<"$ORIGIN ."<<endl;
   std::ostream::sync_with_stdio(false);
-
-  while(di.backend->get(rr)) {
-    if(rr.qtype.getCode() != 0) {
-      switch (rr.qtype.getCode()) {
-      case QType::ALIAS:
-      case QType::CNAME:
-      case QType::MX:
-      case QType::NS:
-      case QType::SRV:
-        if (!rr.content.empty() && rr.content[rr.content.size()-1] != '.') {
-          rr.content.append(1, '.');
-        }
-        break;
-      }
-
-      cout<<rr.qname<<"\t"<<rr.ttl<<"\tIN\t"<<rr.qtype.toString()<<"\t"<<rr.content<<"\n";
-    }
+  for (const auto& rec : records) {
+    std::cout << formatRecord(rec) << std::endl;
   }
   cout.flush();
   return EXIT_SUCCESS;
@@ -1740,6 +1832,107 @@ static int clearZone(const ZoneName &zone) {
   return EXIT_SUCCESS;
 }
 
+// Copy the contents of zone `srcinfo` to zone `dstzone` in backend `tgt`.
+// Used by both "zone copy" and "b2b-migrate".
+static void copyZoneContents(const DomainInfo& srcinfo, const ZoneName& dstzone, DNSBackend* tgt)
+{
+  DNSBackend* src = srcinfo.backend;
+  size_t num_records{0};
+  size_t num_comments{0};
+  size_t num_metadata{0};
+  size_t num_keys{0};
+  bool rewriteNames{false};
+
+  DomainInfo dstinfo;
+  DNSResourceRecord rr; // NOLINT(readability-identifier-length)
+
+  // Check target backend fits the requirements (only matters for b2b-migrate)
+  // TODO: figure a way to quickly know if there are comments and reject a
+  // target backend without comments support
+  if (srcinfo.zone.hasVariant() && (tgt->getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    cerr << "Target backend does not support views." << endl;
+    throw PDNSException("Failed to create zone");
+  }
+
+  // Create zone
+  if (!tgt->createDomain(dstzone, srcinfo.kind, srcinfo.primaries, srcinfo.account)) {
+    throw PDNSException("Failed to create zone " + dstzone.toLogString());
+  }
+  if (!tgt->getDomainInfo(dstzone, dstinfo)) {
+    throw PDNSException("Failed to create zone " + dstzone.toLogString());
+  }
+
+  // Copy records
+  if (!src->list(srcinfo.zone, srcinfo.id, true)) {
+    throw PDNSException("Failed to list records of " + srcinfo.zone.toLogString());
+  }
+
+  rewriteNames = srcinfo.zone != dstzone;
+
+  tgt->startTransaction(dstzone, dstinfo.id);
+
+  while(src->get(rr)) {
+    rr.domain_id = dstinfo.id;
+    if (rewriteNames) {
+      rr.qname.makeUsRelative(srcinfo.zone);
+      rr.qname += dstzone.operator const DNSName&();
+    }
+    // FIXME: this should pass rr.ordername but only SQL-based backends
+    // will fill this field correctly.
+    if (!tgt->feedRecord(rr, DNSName())) {
+      tgt->abortTransaction();
+      throw PDNSException("Failed to feed record '" + rr.qname.toLogString() + "' to zone " + dstzone.toLogString());
+    }
+    num_records++;
+  }
+
+  // Copy comments
+  if (src->listComments(srcinfo.id)) {
+    if ((tgt->getCapabilities() & DNSBackend::CAP_COMMENTS) == 0) {
+      tgt->abortTransaction();
+      throw PDNSException("Target backend does not support comments - remove them first");
+    }
+    Comment comm;
+    while(src->getComment(comm)) {
+      comm.domain_id = dstinfo.id;
+      if (rewriteNames) {
+        comm.qname.makeUsRelative(srcinfo.zone);
+        comm.qname += dstzone.operator const DNSName&();
+      }
+      if (!tgt->feedComment(comm)) {
+        tgt->abortTransaction();
+        throw PDNSException("Failed to feed zone comments");
+      }
+      num_comments++;
+    }
+  }
+
+  // Copy metadata
+  std::map<std::string, std::vector<std::string>> metas;
+  if (src->getAllDomainMetadata(srcinfo.zone, metas)) {
+    for (const auto& meta : metas) {
+      if (!tgt->setDomainMetadata(dstzone, meta.first, meta.second)) {
+        tgt->abortTransaction();
+        throw PDNSException("Failed to feed zone metadata");
+      }
+      num_metadata++;
+    }
+  }
+
+  // Copy keys
+  int64_t keyID{-1}; // temp var for KeyID
+  std::vector<DNSBackend::KeyData> keys;
+  if (src->getDomainKeys(srcinfo.zone, keys)) {
+    for(const DNSBackend::KeyData& key: keys) {
+      tgt->addDomainKey(dstzone, key, keyID);
+      num_keys++;
+    }
+  }
+
+  tgt->commitTransaction();
+  cout << "Copied " << num_records << " record(s), " << num_comments << " comment(s), " << num_metadata << " metadata(s) and " << num_keys << " cryptokey(s)" << endl;
+}
+
 class PDNSColors
 {
 public:
@@ -1772,7 +1965,7 @@ static bool spawnEditor(const std::string& editor, std::string_view tmpfile, int
   sigset_t mask;
   sigset_t omask;
 
-  // Ignore INT, QUIT and CHLD signals while the editor process runs
+  // Block INT, QUIT and CHLD signals while the editor process runs
   sigemptyset(&mask);
   sigaddset(&mask, SIGCHLD);
   sigaddset(&mask, SIGINT);
@@ -1782,18 +1975,22 @@ static bool spawnEditor(const std::string& editor, std::string_view tmpfile, int
   switch (pid_t child = fork()) {
   case 0:
     {
-      std::array<const char *, 4> args{};
-      size_t pos{0};
+      std::vector<std::string> parts;
       std::string gotolinestr;
-      args.at(pos++) = editor.c_str();
+      stringtok(parts, editor, " \t");
       if (gotoline > 0) {
         // TODO: if editor is 'ed', skip this; if 'ex' or 'vi', use '-c number'
         gotolinestr = "+" + std::to_string(gotoline);
-        args.at(pos++) = gotolinestr.c_str();
+        parts.emplace_back(gotolinestr);
       }
-      args.at(pos++) = tmpfile.data();
-      args.at(pos++) = nullptr;
-      if (::execvp(args.at(0), const_cast<char **>(args.data())) != 0) { // NOLINT(cppcoreguidelines-pro-type-const-cast)
+      std::vector<const char*> argv;
+      argv.reserve(parts.size() + 2);
+      for (const auto& part : parts) {
+        argv.emplace_back(part.c_str());
+      }
+      argv.emplace_back(tmpfile.data());
+      argv.emplace_back(nullptr);
+      if (::execvp(argv.at(0), const_cast<char * const*>(argv.data())) != 0) { // NOLINT(cppcoreguidelines-pro-type-const-cast)
         ::exit(errno); // NOLINT(concurrency-mt-unsafe)
       }
       // std::unreachable();
@@ -1827,53 +2024,186 @@ static bool spawnEditor(const std::string& editor, std::string_view tmpfile, int
   return false;
 }
 
-static int editZone(const ZoneName &zone, const PDNSColors& col) {
-  UtilBackend B; //NOLINT(readability-identifier-length)
-  DomainInfo di;
-  DNSSECKeeper dk(&B);
+// Fill the file `tmpnam' (possibly already open if `tmpfd' is valid) with the
+// contents of zone `info', in bind format.
+// Returns the zone records in sorted order, with the file closed and `tmpfd'
+// reset to -1.
+static std::vector<DNSRecord>fillTempZoneFile(int& tmpfd, const char* tmpnam, DomainInfo& info)
+{
+  std::vector<DNSRecord> records;
 
-  if (! B.getDomainInfo(zone, di)) {
+  info.backend->list(info.zone, info.id);
+  if (tmpfd < 0 && (tmpfd = open(tmpnam, O_CREAT | O_WRONLY | O_TRUNC, 0600)) < 0) {
+    unixDie("Error reopening temporary file "+string(tmpnam));
+  }
+  const std::string_view header("; Warning - every name in this file is ABSOLUTE!\n$ORIGIN .\n");
+  if (write(tmpfd, header.data(), header.length()) < 0) {
+    unixDie("Writing zone to temporary file");
+  }
+  DNSResourceRecord resrec;
+  while (info.backend->get(resrec)) {
+    if (resrec.qtype.getCode() == QType::ENT) {
+      continue;
+    }
+    DNSRecord rec(resrec);
+    records.emplace_back(std::move(rec));
+  }
+  sort(records.begin(), records.end(), DNSRecord::prettyCompare);
+  for (const auto& rec : records) {
+    ostringstream oss;
+    oss << formatRecord(rec) << endl;
+    if (write(tmpfd, oss.str().c_str(), oss.str().length()) < 0) {
+      unixDie("Writing zone to temporary file");
+    }
+  }
+  close(tmpfd);
+  tmpfd = -1;
+  return records;
+}
+
+// Try and parse the file `tmpnam' as a zone file.
+// Returns true with the zone records in sorted order in `records' if
+// successful, false with the line number of the first error in `errorline' if
+// not.
+static bool parseZoneFile(const char* tmpnam, int& errorline, std::vector<DNSRecord>& records)
+{
+  records.clear();
+  ZoneParserTNG zpt(tmpnam, g_rootzonename);
+  zpt.setMaxGenerateSteps(::arg().asNum("max-generate-steps"));
+  zpt.setMaxIncludes(::arg().asNum("max-include-depth"));
+  DNSResourceRecord zrr;
+  try {
+    while(zpt.get(zrr)) {
+      DNSRecord rec(zrr);
+      records.push_back(std::move(rec));
+    }
+  }
+  catch(std::exception& e) {
+    cerr<<"Problem: "<<e.what()<<" "<<zpt.getLineOfFile()<<endl;
+    auto fnum = zpt.getLineNumAndFile();
+    errorline = fnum.second;
+    records.clear();
+    return false;
+  }
+  catch(PDNSException& e) {
+    cerr<<"Problem: "<<e.reason<<" "<<zpt.getLineOfFile()<<endl;
+    auto fnum = zpt.getLineNumAndFile();
+    errorline = fnum.second;
+    records.clear();
+    return false;
+  }
+  sort(records.begin(), records.end(), DNSRecord::prettyCompare);
+  return true;
+}
+
+// Return whether the SOA serial number remains unchanged in the update.
+static bool isSameZoneSerial(const SOAData& soa, DomainInfo& info, std::vector<DNSRecord>& records)
+{
+  auto iter = std::find_if(records.begin(), records.end(), [&info](const DNSRecord& rec) { return rec.d_type == QType::SOA && rec.d_name == info.zone.operator const DNSName&(); });
+  // If there is no SOA record, then, well, we can argue its serial number
+  // did change, because this means someone irresponsible has deleted it.
+  if (iter == records.end()) {
+    return false;
+  }
+  SOAData newsoa;
+  fillSOAData(iter->getContent()->getZoneRepresentation(true), newsoa);
+  return soa.serial == newsoa.serial;
+}
+
+// Increase the serial number of the SOA record according to the
+// SOA-EDIT-INCREASE policy.
+static bool increaseZoneSerial(DNSSECKeeper& dsk, DomainInfo& info, std::vector<DNSRecord>& records, const PDNSColors& col)
+{
+  auto iter = std::find_if(records.begin(), records.end(), [&info](const DNSRecord& rec) { return rec.d_type == QType::SOA && rec.d_name == info.zone.operator const DNSName&(); });
+  // There should be one SOA record, therefore iter should be valid...
+  // ...but it is possible to f*ck up a zone well enough to reach this
+  // path with no SOA record at all.
+  if (iter == records.end()) {
+    return false;
+  }
+  // Since the user may have modified the SOA record (but not its serial
+  // number), we need to recreate a fresh SOAData from the new record contents.
+  DNSRecord oldSoaDR = *iter;
+  SOAData soa;
+  fillSOAData(oldSoaDR.getContent()->getZoneRepresentation(true), soa);
+  // copy the few fields not set up by fillSOAData() above.
+  soa.zonename = info.zone;
+  soa.ttl = oldSoaDR.d_ttl;
+
+  // TODO: do we need to check for presigned? here or maybe even all the way before edit-zone starts?
+
+  string soaEditKind;
+  dsk.getSoaEdit(info.zone, soaEditKind);
+
+  DNSResourceRecord resrec;
+  makeIncreasedSOARecord(soa, "SOA-EDIT-INCREASE", soaEditKind, resrec);
+  DNSRecord rec(resrec);
+
+  ostringstream str;
+  str<< col.red() << "-" << formatRecord(oldSoaDR, " ") << col.rst() <<endl;
+  str << col.green() << "+" << formatRecord(rec, " ") << col.rst() <<endl;
+  cout << str.str();
+
+  *iter = std::move(rec);
+  cout<<"SOA serial for zone "<<info.zone<<" set to "<<soa.serial;
+  return true;
+}
+
+// NOLINTNEXTLINE(readability-function-cognitive-complexity): despite moving a lot of it into subroutines, it's still a bit over the threshold as of 20250811
+static int editZone(const ZoneName &zone, const PDNSColors& col)
+{
+  UtilBackend B; //NOLINT(readability-identifier-length)
+  DomainInfo info;
+  DNSSECKeeper dsk(&B);
+  SOAData soa;
+  int resp{0};
+
+  if (! B.getDomainInfo(zone, info)) {
     cerr << "Zone '" << zone << "' not found!" << endl;
     return EXIT_FAILURE;
   }
-  if ((di.backend->getCapabilities() & DNSBackend::CAP_LIST) == 0) {
+  if ((info.backend->getCapabilities() & DNSBackend::CAP_LIST) == 0) {
     cerr << "Backend for zone '" << zone << "' does not support listing its contents." << endl;
     return EXIT_FAILURE;
   }
 
   if (isatty(STDIN_FILENO) == 0) {
-    cerr << "edit-zone requires a terminal" << endl;
+    cerr << "zone edit requires a terminal" << endl;
     return EXIT_FAILURE;
   }
 
-  if (di.isSecondaryType() && !g_force) {
+  if (info.isSecondaryType() && !g_force) {
     cout << "Zone '" << zone << "' is a secondary zone." << endl;
     while (true) {
       cout << "Edit the zone anyway? (N/y) " << std::flush;
-      int resp = read1char();
+      resp = ::tolower(read1char());
       if (resp != '\n') {
         cout << endl;
       }
-      if (resp == 'y' || resp == 'Y') {
+      if (resp == 'y') {
         break;
       }
-      if (resp == 'n' || resp == 'N' || resp == '\n') {
+      if (resp == 'n' || resp == '\n') {
         return EXIT_FAILURE;
       }
     }
   }
 
-  /* ensure that the temporary file will only
-     be accessible by the current user, not even
-     by other users in the same group, and certainly
-     not by other users.
-  */
+  // Get the original SOA record once, for comparison purposes.
+  // Note that this may fail if there is no active SOA record, which is not a
+  // problem here, as we are only interested into the _current_ serial number.
+  (void)B.getSOAUncached(info.zone, soa);
+
+  // Ensure that the temporary file will only be accessible by the current user,
+  // not even by other users in the same group, and certainly not by other
+  // users.
   umask(S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
-  vector<DNSRecord> pre, post;
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays): std::array<> would not play well with ѕtruct deleteme below
   char tmpnam[]="/tmp/pdnsutil-XXXXXX";
-  int tmpfd=mkstemp(tmpnam);
-  if(tmpfd < 0)
-    unixDie("Making temporary filename in "+string(tmpnam));
+  int tmpfd=mkstemp(static_cast<char *>(tmpnam));
+  if(tmpfd < 0) {
+    unixDie("Making temporary filename in "+string(static_cast<const char*>(tmpnam)));
+  }
   struct deleteme {
     ~deleteme() { unlink(d_name.c_str()); }
     deleteme(string name) : d_name(std::move(name)) {}
@@ -1882,196 +2212,194 @@ static int editZone(const ZoneName &zone, const PDNSColors& col) {
     deleteme operator=(const deleteme &) = delete;
     deleteme operator=(deleteme &&) = delete;
     string d_name;
-  } dm(tmpnam);
+  } deleter(static_cast<const char *>(tmpnam));
 
-  vector<DNSResourceRecord> checkrr;
   int gotoline=0;
   string editor="editor";
-  if(auto e=getenv("EDITOR")) // <3
-    editor=e;
- editAgain:;
-  di.backend->list(zone, di.id);
-  pre.clear(); post.clear();
-  {
-    if(tmpfd < 0 && (tmpfd=open(tmpnam, O_CREAT | O_WRONLY | O_TRUNC, 0600)) < 0)
-      unixDie("Error reopening temporary file "+string(tmpnam));
-    string header("; Warning - every name in this file is ABSOLUTE!\n$ORIGIN .\n");
-    if(write(tmpfd, header.c_str(), header.length()) < 0)
-      unixDie("Writing zone to temporary file");
-    DNSResourceRecord rr;
-    while(di.backend->get(rr)) {
-      if(rr.qtype.getCode() == 0) {
-        continue;
-      }
-      DNSRecord dr(rr);
-      pre.push_back(std::move(dr));
-    }
-    sort(pre.begin(), pre.end(), DNSRecord::prettyCompare);
-    for(const auto& dr : pre) {
-      ostringstream os;
-      os<<dr.d_name<<"\t"<<dr.d_ttl<<"\tIN\t"<<DNSRecordContent::NumberToType(dr.d_type)<<"\t"<<dr.getContent()->getZoneRepresentation(true)<<endl;
-      if(write(tmpfd, os.str().c_str(), os.str().length()) < 0)
-        unixDie("Writing zone to temporary file");
-    }
-    close(tmpfd);
-    tmpfd=-1;
-  }
- editMore:;
-  post.clear();
-  int result{0};
-  if (!spawnEditor(editor, tmpnam, gotoline, result)) { // NOLINT(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    unixDie("Editing file with: '"+editor+"', perhaps set EDITOR variable");
-  }
-  if (result != 0) {
-    throw std::runtime_error("Editing file with: '" + editor + "' returned non-zero status " + std::to_string(result));
-  }
-  ZoneParserTNG zpt(static_cast<const char *>(tmpnam), g_rootzonename);
-  zpt.setMaxGenerateSteps(::arg().asNum("max-generate-steps"));
-  zpt.setMaxIncludes(::arg().asNum("max-include-depth"));
-  DNSResourceRecord zrr;
-  map<pair<DNSName,uint16_t>, vector<DNSRecord> > grouped;
-  try {
-    while(zpt.get(zrr)) {
-        DNSRecord dr(zrr);
-        post.push_back(dr);
-        grouped[{dr.d_name,dr.d_type}].push_back(dr);
-    }
-  }
-  catch(std::exception& e) {
-    cerr<<"Problem: "<<e.what()<<" "<<zpt.getLineOfFile()<<endl;
-    auto fnum = zpt.getLineNumAndFile();
-    gotoline = fnum.second;
-    goto reAsk;
-  }
-  catch(PDNSException& e) {
-    cerr<<"Problem: "<<e.reason<<" "<<zpt.getLineOfFile()<<endl;
-    auto fnum = zpt.getLineNumAndFile();
-    gotoline = fnum.second;
-    goto reAsk;
+  if(auto* envvar=getenv("EDITOR")) { // NOLINT(concurrency-mt-unsafe)
+    editor=envvar;
   }
 
-  sort(post.begin(), post.end(), DNSRecord::prettyCompare);
-  checkrr.clear();
-
-  for(const DNSRecord& rr : post) {
-    DNSResourceRecord drr = DNSResourceRecord::fromWire(rr);
-    drr.domain_id = di.id;
-    checkrr.push_back(std::move(drr));
-  }
-  if(checkZone(dk, B, zone, &checkrr) != 0) {
-  reAsk:;
-    cerr << col.red() << col.bold() << "There was a problem with your zone" << col.rst() << "\nOptions are: (e)dit your changes, (r)etry with original zone, (a)pply change anyhow, (q)uit: " << std::flush;
-    int c=read1char();
-    cerr<<"\n";
-    if(c=='e') {
-      post.clear();
-      goto editMore;
-    } else if(c=='r') {
-      post.clear();
-      goto editAgain;
-    } else if(c=='q') {
-      return EXIT_FAILURE;
-    } else if(c!='a') {
-      goto reAsk;
-    }
-  }
-
-
-  vector<DNSRecord> diff;
-
+  vector<DNSRecord> pre;
+  vector<DNSRecord> post;
   map<pair<DNSName,uint16_t>, string> changed;
-  set_difference(pre.cbegin(), pre.cend(), post.cbegin(), post.cend(), back_inserter(diff), DNSRecord::prettyCompare);
-  for(const auto& d : diff) {
-    ostringstream str;
-    str << col.red() << "-" << d.d_name << " " << d.d_ttl << " IN " << DNSRecordContent::NumberToType(d.d_type) << " " <<d.getContent()->getZoneRepresentation(true) << col.rst() <<endl;
-    changed[{d.d_name,d.d_type}] += str.str();
 
-  }
-  diff.clear();
-  set_difference(post.cbegin(), post.cend(), pre.cbegin(), pre.cend(), back_inserter(diff), DNSRecord::prettyCompare);
-  for(const auto& d : diff) {
-    ostringstream str;
-
-    str<<col.green() << "+" << d.d_name << " " << d.d_ttl << " IN " <<DNSRecordContent::NumberToType(d.d_type) << " " << d.getContent()->getZoneRepresentation(true) << col.rst() <<endl;
-    changed[{d.d_name,d.d_type}]+=str.str();
-  }
-  cout<<"Detected the following changes:"<<endl;
-  for(const auto& c : changed) {
-    cout<<c.second;
-  }
-  if (!changed.empty()) {
-    if (changed.find({zone.operator const DNSName&(), QType::SOA}) == changed.end()) {
-     reAsk3:;
-      cout<<endl<<"You have not updated the SOA record! Would you like to increase-serial?"<<endl;
-      cout<<"(y)es - increase serial, (n)o - leave SOA record as is, (e)dit your changes, (q)uit: "<<std::flush;
-      int c = read1char();
-      switch(c) {
-        case 'y':
-          {
-            DNSRecord oldSoaDR = grouped[{zone.operator const DNSName&(), QType::SOA}].at(0); // there should be only one SOA record, so we can use .at(0);
-            ostringstream str;
-            str<< col.red() << "-" << oldSoaDR.d_name << " " << oldSoaDR.d_ttl << " IN " << DNSRecordContent::NumberToType(oldSoaDR.d_type) << " " <<oldSoaDR.getContent()->getZoneRepresentation(true) << col.rst() <<endl;
-
-            SOAData sd;
-            B.getSOAUncached(zone, sd);
-            // TODO: do we need to check for presigned? here or maybe even all the way before edit-zone starts?
-
-            string soaEditKind;
-            dk.getSoaEdit(zone, soaEditKind);
-
-            DNSResourceRecord rr;
-            makeIncreasedSOARecord(sd, "SOA-EDIT-INCREASE", soaEditKind, rr);
-            DNSRecord dr(rr);
-            str << col.green() << "+" << dr.d_name << " " << dr.d_ttl<< " IN " <<DNSRecordContent::NumberToType(dr.d_type) << " " <<dr.getContent()->getZoneRepresentation(true) << col.rst() <<endl;
-
-            changed[{dr.d_name, dr.d_type}]+=str.str();
-            grouped[{dr.d_name, dr.d_type}].at(0) = dr;
-            cout<<endl<<"SOA serial for zone "<<zone<<" set to "<<sd.serial;
-          }
-          break;
-        case 'q':
-          return EXIT_FAILURE;
-        case 'e':
-          goto editMore;
-        case 'n':
-          goto reAsk2;
-        default:
-          goto reAsk3;
+  enum { CREATEZONEFILE, EDITFILE, INVALIDZONE, ASKAPPLY, ASKSOA, VALIDATE, APPLY } state{CREATEZONEFILE};
+  while (true) {
+    switch (state) {
+    case CREATEZONEFILE:
+      pre = fillTempZoneFile(tmpfd, static_cast<const char *>(tmpnam), info);
+      //state = EDITFILE;
+      [[fallthrough]];
+    case EDITFILE:
+      post.clear();
+      {
+        int result{0};
+        if (!spawnEditor(editor, tmpnam, gotoline, result)) { // NOLINT(cppcoreguidelines-pro-bounds-array-to-pointer-decay)
+          unixDie("Editing file with: '"+editor+"', perhaps set EDITOR variable");
+        }
+        if (result != 0) {
+          throw std::runtime_error("Editing file with: '" + editor + "' returned non-zero status " + std::to_string(result));
+        }
       }
-    }
-  }
-  reAsk2:;
-  if(changed.empty()) {
-    cout<<endl<<"No changes to apply."<<endl;
-    return(EXIT_SUCCESS);
-  }
-  cout<<endl<<"(a)pply these changes, (e)dit again, (r)etry with original zone, (q)uit: "<<std::flush;
-  int c=read1char();
-  post.clear();
-  cerr<<'\n';
-  if(c=='q')
-    return(EXIT_SUCCESS);
-  if(c=='e') {
-    goto editMore;
-  }
-  else if(c=='r')
-    goto editAgain;
-  else if(changed.empty() || c!='a')
-    goto reAsk2;
+      if (!parseZoneFile(static_cast<const char *>(tmpnam), gotoline, post)) {
+        state = INVALIDZONE;
+        break;
+      }
+      {
+        vector<DNSResourceRecord> checkrr;
+        checkrr.reserve(post.size());
+        for(const DNSRecord& rec : post) {
+          DNSResourceRecord drr = DNSResourceRecord::fromWire(rec);
+          drr.domain_id = info.id;
+          checkrr.push_back(std::move(drr));
+        }
+        if(checkZone(dsk, B, zone, &checkrr) != 0) {
+          state = INVALIDZONE;
+          break;
+        }
+      }
+      state = VALIDATE;
+      break;
+    case INVALIDZONE:
+      cerr << col.red() << col.bold() << "There was a problem with your zone" << col.rst() << "\nOptions are: (e)dit your changes, (r)etry with original zone, (a)pply change anyhow, (q)uit: " << std::flush;
+      resp = ::tolower(read1char());
+      if (resp != '\n') {
+        cerr << endl;
+      }
+      switch (resp) {
+      case 'e':
+        post.clear();
+        state = EDITFILE;
+        break;
+      case 'r':
+        post.clear();
+        state = CREATEZONEFILE;
+        break;
+      case 'q':
+        return EXIT_FAILURE;
+      case 'a':
+        state = VALIDATE;
+        break;
+      }
+      break;
+    case VALIDATE:
+      {
+        vector<DNSRecord> diffs;
 
-  di.backend->startTransaction(zone, UnknownDomainID);
-  for(const auto& change : changed) {
-    vector<DNSResourceRecord> vrr;
-    for(const DNSRecord& rr : grouped[change.first]) {
-      DNSResourceRecord crr = DNSResourceRecord::fromWire(rr);
-      crr.domain_id = di.id;
-      vrr.push_back(std::move(crr));
+        changed.clear();
+        set_difference(pre.cbegin(), pre.cend(), post.cbegin(), post.cend(), back_inserter(diffs), DNSRecord::prettyCompare);
+        for(const auto& diff : diffs) {
+          ostringstream str;
+          str << col.red() << "-" << formatRecord(diff, " ") << col.rst() <<endl;
+          changed[{diff.d_name,diff.d_type}] += str.str();
+        }
+        diffs.clear();
+        set_difference(post.cbegin(), post.cend(), pre.cbegin(), pre.cend(), back_inserter(diffs), DNSRecord::prettyCompare);
+        for(const auto& diff : diffs) {
+          ostringstream str;
+          str<<col.green() << "+" << formatRecord(diff, " ") << col.rst() <<endl;
+          changed[{diff.d_name,diff.d_type}]+=str.str();
+        }
+      }
+      if (changed.empty()) {
+        cout<<endl<<"No changes to apply."<<endl;
+        return(EXIT_SUCCESS);
+      }
+      cout<<"Detected the following changes:"<<endl;
+      for(auto& change : changed) {
+        cout<<change.second;
+        // After this display, we only need the keys of `changed' to know which
+        // records need updates, but not the text representation anymore (we
+        // will use the contents of `post' for that purpose).
+        change.second.clear();
+      }
+      // If the SOA record has not been modified, ask the user if they want to
+      // update the serial number.
+      if (isSameZoneSerial(soa, info, post)) {
+        state = ASKSOA;
+      }
+      else {
+        state = ASKAPPLY;
+      }
+      break;
+    case ASKSOA:
+      cout<<endl<<"You have not updated the serial number in the SOA record!"<<endl<<"Would you like to increase-serial?"<<endl;
+      cout<<"(y)es - increase serial, (n)o - leave SOA record as is, (e)dit your changes, (q)uit: "<<std::flush;
+      resp = ::tolower(read1char());
+      if (resp != '\n') {
+        cout << endl;
+      }
+      switch (resp) {
+      case 'y':
+        {
+          if (increaseZoneSerial(dsk, info, post, col)) {
+            // Make sure to mark the SOA record as needing to be written.
+            changed[{info.zone.operator const DNSName&(), QType::SOA}] = "";
+            state = ASKAPPLY;
+          }
+          else {
+            cout << "SOA record is missing!" << endl;
+            state = INVALIDZONE;
+          }
+        }
+        break;
+      case 'q':
+        return EXIT_FAILURE;
+      case 'e':
+        state = EDITFILE;
+        break;
+      case 'n':
+        state = ASKAPPLY;
+        break;
+      }
+      break;
+    case ASKAPPLY:
+      cout<<endl<<"(a)pply these changes, (e)dit again, (r)etry with original zone, (q)uit: "<<std::flush;
+      resp = ::tolower(read1char());
+      if (resp != '\n') {
+        cout << endl;
+      }
+      switch (resp) {
+      case 'q':
+        return(EXIT_SUCCESS);
+      case 'e':
+        state = EDITFILE;
+        break;
+      case 'r':
+        state = CREATEZONEFILE;
+        break;
+      case 'a':
+        state = APPLY;
+        break;
+      }
+      break;
+    case APPLY:
+      // Free some memory
+      pre.clear();
+      info.backend->startTransaction(zone, UnknownDomainID);
+      {
+        map<pair<DNSName,uint16_t>, vector<DNSRecord>> grouped;
+        for (const auto& rec : post) {
+          grouped[{rec.d_name,rec.d_type}].push_back(rec);
+        }
+        for(const auto& change : changed) {
+          vector<DNSResourceRecord> records;
+          for(const DNSRecord& rec : grouped[change.first]) {
+            DNSResourceRecord resrec = DNSResourceRecord::fromWire(rec);
+            resrec.domain_id = info.id;
+            records.push_back(std::move(resrec));
+          }
+          auto [qname, qtype] = change.first;
+          info.backend->replaceRRSet(info.id, qname, QType(qtype), records);
+        }
+      }
+      post.clear();
+      rectifyZone(dsk, zone, false, false);
+      info.backend->commitTransaction();
+      return EXIT_SUCCESS;
     }
-    di.backend->replaceRRSet(di.id, change.first.first, QType(change.first.second), vrr);
   }
-  rectifyZone(dk, zone, false, false);
-  di.backend->commitTransaction();
-  return EXIT_SUCCESS;
 }
 
 #ifdef HAVE_IPCIPHER
@@ -2267,15 +2595,54 @@ static int createZone(const ZoneName &zone, const DNSName& nsname) {
   if (sd.serial == 0) {
     string edit_kind = ::arg()["default-soa-edit"];
     if (!edit_kind.empty() && !pdns_iequals(edit_kind, "NONE")) {
-      cout << "Consider invoking 'pdnsutil increase-serial " << zone << "'" << endl;
+      cout << "Consider invoking 'pdnsutil zone increase-serial " << zone << "'" << endl;
     }
   }
 
   return EXIT_SUCCESS;
 }
 
+static int copyZone(vector<string>& cmds, const std::string_view synopsis)
+{
+  if(cmds.size() != 2) {
+    return usage(synopsis);
+  }
+
+  ZoneName src(cmds.at(0));
+  ZoneName dst(cmds.at(1));
+
+  UtilBackend B; //NOLINT(readability-identifier-length)
+  DomainInfo srcinfo;
+  DomainInfo dstinfo;
+  if (B.getDomainInfo(dst, dstinfo)) {
+    cerr << "Zone '" << dst << "' already exists." << endl;
+    return EXIT_FAILURE;
+  }
+  if ((B.getCapabilities() & DNSBackend::CAP_CREATE) == 0) {
+    cerr << "None of the configured backends support zone creation." << endl;
+    cerr << "Zone '" << dst << "' was not created." << endl;
+    return EXIT_FAILURE;
+  }
+  if (dst.hasVariant() && (B.getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    cerr << "None of the configured backends support views." << endl;
+    cerr << "Zone '" << dst << "' was not created." << endl;
+    return EXIT_FAILURE;
+  }
+  if (!B.getDomainInfo(src, srcinfo)) {
+    cerr << "Zone '" << src << "' does not exist" << endl;
+    return EXIT_FAILURE;
+  }
+  cout << "Creating '" << dst << "'" << endl;
+  copyZoneContents(srcinfo, dst, srcinfo.backend);
+
+  cout << "Remember to check the contents of '" << dst << "' and rectify the new zone." << endl;
+
+  return EXIT_SUCCESS;
+}
+
 // add-record ZONE name type [ttl] "content" ["content"]
-static int addOrReplaceRecord(bool isAdd, const vector<string>& cmds) {
+static int addOrReplaceRecord(bool isAdd, const vector<string>& cmds)
+{
   DNSResourceRecord rr;
   vector<DNSResourceRecord> newrrs;
   ZoneName zone(cmds.at(0));
@@ -2299,7 +2666,6 @@ static int addOrReplaceRecord(bool isAdd, const vector<string>& cmds) {
   rr.auth = true;
   rr.domain_id = di.id;
   rr.qname = name;
-  DNSResourceRecord oldrr;
 
   unsigned int contentStart = 3;
   if(cmds.size() > 4) {
@@ -2307,44 +2673,6 @@ static int addOrReplaceRecord(bool isAdd, const vector<string>& cmds) {
     if (std::to_string(ttl) == cmds.at(3)) {
       rr.ttl = ttl;
       contentStart++;
-    }
-  }
-
-  di.backend->startTransaction(zone, UnknownDomainID);
-
-  // Enforce that CNAME records can not be mixed with any other.
-  // If we add a CNAME: there should be no existing records except for one
-  // possible previous CNAME, which will get replaced.
-  // If we add something else: there should be no existing CNAME record.
-  bool reject{false};
-  if (rr.qtype.getCode() == QType::CNAME) {
-    di.backend->lookup(QType(QType::ANY), rr.qname, static_cast<int>(di.id));
-    while (di.backend->get(oldrr)) {
-      if (oldrr.qtype.getCode() == QType::CNAME) {
-        if (not isAdd) {
-          // Replacement operation: ok to replace CNAME with another
-          continue;
-        }
-      }
-      reject = true;
-    }
-    if (reject) {
-      cerr<<"Attempting to add CNAME to "<<rr.qname<<" which already has existing records"<<endl;
-      return EXIT_FAILURE;
-    }
-  }
-  else {
-    di.backend->lookup(QType(QType::CNAME), rr.qname, static_cast<int>(di.id));
-    // TODO: It would be nice to have a way to complete a lookup and release its
-    // resources without having to exhaust its results - here one successful
-    // get() is all we need to decide to reject the operation. I'm looking at
-    // you, lmdb backend.
-    while (di.backend->get(oldrr)) {
-      reject = true;
-    }
-    if (reject) {
-      cerr<<"Attempting to add record to "<<rr.qname<<" which already has a CNAME record"<<endl;
-      return EXIT_FAILURE;
     }
   }
 
@@ -2365,11 +2693,16 @@ static int addOrReplaceRecord(bool isAdd, const vector<string>& cmds) {
     }
   }
 
-  if(isAdd) {
+  bool allowUnderscores = areUnderscoresAllowed(zone, di);
+
+  di.backend->startTransaction(zone, UnknownDomainID);
+
+  DNSResourceRecord oldrr;
+  vector<DNSResourceRecord> oldrrs;
+  if (isAdd) {
     // the 'add' case; preserve existing records, making sure to discard
     // would-be new records which contents are identical to the existing ones.
-    vector<DNSResourceRecord> oldrrs;
-    di.backend->lookup(rr.qtype, rr.qname, static_cast<int>(di.id));
+    di.backend->lookup(QType(QType::ANY), rr.qname, static_cast<int>(di.id));
     while (di.backend->get(oldrr)) {
       oldrrs.push_back(oldrr);
       for (auto iter = newrrs.begin(); iter != newrrs.end(); ++iter) {
@@ -2379,8 +2712,28 @@ static int addOrReplaceRecord(bool isAdd, const vector<string>& cmds) {
         }
       }
     }
-    oldrrs.insert(oldrrs.end(), newrrs.begin(), newrrs.end());
-    newrrs = std::move(oldrrs);
+    newrrs.insert(newrrs.end(), oldrrs.begin(), oldrrs.end());
+  }
+
+  std::vector<std::pair<DNSResourceRecord, string>> errors;
+  Check::checkRRSet(oldrrs, newrrs, zone, allowUnderscores, errors);
+  oldrrs.clear(); // no longer needed
+  if (!errors.empty()) {
+    for (const auto& error : errors) {
+      const auto [rec, why] = error;
+      cerr << "RRset " << rec.qname.toString() << " IN " << rec.qtype.toString() << ": " << why << endl;
+    }
+    return EXIT_FAILURE;
+  }
+
+  if (isAdd) {
+    // We had collected all record types earlier in order to be able to
+    // perform the proper checks. Trim the list to only keep those of the
+    // qtype we are modifying, for the sake of the replaceRRSet call below.
+    newrrs.erase(
+      std::remove_if(newrrs.begin(), newrrs.end(),
+        [&rr](const DNSResourceRecord& rec) -> bool { return rec.qtype != rr.qtype; }),
+      newrrs.end());
   }
   else {
     cout<<"All existing records for "<<rr.qname<<" IN "<<rr.qtype.toString()<<" will be replaced"<<endl;
@@ -2393,8 +2746,13 @@ static int addOrReplaceRecord(bool isAdd, const vector<string>& cmds) {
   // need to be explicit to bypass the ueberbackend cache!
   di.backend->lookup(rr.qtype, name, di.id);
   cout<<"New rrset:"<<endl;
+  std::vector<DNSRecord> finalrrs;
   while(di.backend->get(rr)) {
-    cout<<rr.qname.toString()<<" "<<rr.ttl<<" IN "<<rr.qtype.toString()<<" "<<rr.content<<endl;
+    finalrrs.emplace_back(DNSRecord(rr));
+  }
+  sort(finalrrs.begin(), finalrrs.end(), DNSRecord::prettyCompare);
+  for (const auto& rec : finalrrs) {
+    std::cout << formatRecord(rec, " ") << std::endl;
   }
   di.backend->commitTransaction();
   return EXIT_SUCCESS;
@@ -2853,7 +3211,10 @@ static bool showZone(DNSSECKeeper& dnsseckeeper, const ZoneName& zone, bool expo
 
     meta.clear();
     if (B.getDomainMetadata(zone, "AXFR-MASTER-TSIG", meta) && !meta.empty()) {
-      cout << "Zone uses following TSIG key(s): " << boost::join(meta, ",") << endl;
+      // Although AXFR-MASTER-TSIG may contain a list of keys, the current
+      // state of DNSSECKeeper::getTSIGForAccess() causes only the first one
+      // to be ever used, so only list the first item here.
+      cout << "Zone uses following TSIG key: " << meta.front() << endl;
     }
 
     std::map<std::string, std::vector<std::string> > metamap;
@@ -2955,7 +3316,7 @@ static bool showZone(DNSSECKeeper& dnsseckeeper, const ZoneName& zone, bool expo
         cout<<"ID = "<<value.second.id<<" ("<<DNSSECKeeper::keyTypeToString(value.second.keyType)<<")";
       }
       if (value.first.getKey()->getBits() < 1) {
-        cout<<" <key missing or defunct, perhaps you should run pdnsutil hsm create-key>" <<endl;
+        cout<<" <key missing or defunct, perhaps you should run 'pdnsutil hsm create-key'>" <<endl;
         continue;
       }
       if (!exportDS) {
@@ -3028,7 +3389,7 @@ static bool secureZone(DNSSECKeeper& dsk, const ZoneName& zone)
   }
 
   if(dsk.isSecuredZone(zone)) {
-    cerr << "Zone '"<<zone<<"' already secure, remove keys with pdnsutil remove-zone-key if needed"<<endl;
+    cerr << "Zone '"<<zone<<"' already secure, remove keys with 'pdnsutil zone remove-key' if needed"<<endl;
     return false;
   }
 
@@ -3042,7 +3403,7 @@ static bool secureZone(DNSSECKeeper& dsk, const ZoneName& zone)
 
   if (di.kind == DomainInfo::Secondary) {
     cerr << "Warning! This is a secondary zone! If this was a mistake, please run" << endl;
-    cerr<<"pdnsutil disable-dnssec "<<zone<<" right now!"<<endl;
+    cerr<<"'pdnsutil zone dnssec-disable "<<zone<<"' right now!"<<endl;
   }
 
   if (!k_algo.empty()) { // Add a KSK
@@ -4228,7 +4589,7 @@ static int setSignalingZone(vector<string>& cmds, const std::string_view synopsi
 
   DNSSECKeeper dk; //NOLINT(readability-identifier-length)
 
-  // pdnsutil secure-zone $zone
+  // pdnsutil zone secure $zone
   if(!dk.isSecuredZone(zone)) {
     dk.startTransaction(zone);
     bool success = secureZone(dk, zone);
@@ -4238,7 +4599,7 @@ static int setSignalingZone(vector<string>& cmds, const std::string_view synopsi
     }
   }
 
-  // pdnsutil set-nsec3 $zone "1 0 0 -" narrow
+  // pdnsutil zone set-nsec3 $zone "1 0 0 -" narrow
   try {
     if (!dk.setNSEC3PARAM(zone, NSEC3PARAMRecordContent("1 0 0 -"), true)) {
       cerr<<"Cannot set NSEC3 param for " << zone << endl;
@@ -4250,13 +4611,13 @@ static int setSignalingZone(vector<string>& cmds, const std::string_view synopsi
     return 1;
   }
 
-  // pdnsutil rectify-zone $zone
+  // pdnsutil zone rectify $zone
   if(!rectifyZone(dk, zone)) {
     cerr<<"Cannot rectify zone " << zone << endl;
     return 1;
   }
 
-  // pdnsutil set-meta $zone SIGNALING-ZONE 1
+  // pdnsutil metadata set $zone SIGNALING-ZONE 1
   if(addOrSetMeta(zone, "SIGNALING-ZONE", {"1"}, true) != 0) {
     cerr<<"Cannot set meta for zone " << zone << endl;
     return 1;
@@ -4684,13 +5045,16 @@ static int activateTSIGKey(vector<string>& cmds, const std::string_view synopsis
   }
   if (!found) {
     meta.push_back(name);
-  }
-  if (B.setDomainMetadata(zname, metaKey, meta)) {
-    cout << "Enabled TSIG key " << name << " for " << zname << endl;
+    if (B.setDomainMetadata(zname, metaKey, meta)) {
+      cout << "Enabled TSIG key " << name << " for " << zname << endl;
+    }
+    else {
+      cerr << "Failure enabling TSIG key " << name << " for " << zname << endl;
+      return 1;
+    }
   }
   else {
-    cerr << "Failure enabling TSIG key " << name << " for " << zname << endl;
-    return 1;
+    cout << "TSIG key " << name << " is already enabled in zone " << zname << endl;
   }
   return 0;
 }
@@ -4732,13 +5096,16 @@ static int deactivateTSIGKey(vector<string>& cmds, const std::string_view synops
   }
   if (iter != meta.end()) {
     meta.erase(iter);
-  }
-  if (B.setDomainMetadata(zname, metaKey, meta)) {
-    cout << "Disabled TSIG key " << name << " for " << zname << endl;
+    if (B.setDomainMetadata(zname, metaKey, meta)) {
+      cout << "Disabled TSIG key " << name << " for " << zname << endl;
+    }
+    else {
+      cerr << "Failure disabling TSIG key " << name << " for " << zname << endl;
+      return 1;
+    }
   }
   else {
-    cerr << "Failure disabling TSIG key " << name << " for " << zname << endl;
-    return 1;
+    cout << "TSIG key " << name << " is not currently enabled in zone " << zname << endl;
   }
   return 0;
 }
@@ -5018,79 +5385,9 @@ static int B2BMigrate(vector<string>& cmds, const std::string_view synopsis)
   src->getAllDomains(&domains, false, true);
   // iterate zones
   for(const DomainInfo& di: domains) { // NOLINT(readability-identifier-length)
-    size_t nr{0}; // NOLINT(readability-identifier-length)
-    size_t nc{0}; // NOLINT(readability-identifier-length)
-    size_t nm{0}; // NOLINT(readability-identifier-length)
-    size_t nk{0}; // NOLINT(readability-identifier-length)
-    DomainInfo di_new;
-    DNSResourceRecord rr; // NOLINT(readability-identifier-length)
     cout<<"Processing '"<<di.zone<<"'"<<endl;
-    // create zone
-    if (di.zone.hasVariant() && (tgt->getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
-      cerr << "Target backend does not support views." << endl;
-      throw PDNSException("Failed to create zone");
-    }
-    if (!tgt->createDomain(di.zone, di.kind, di.primaries, di.account)) {
-      throw PDNSException("Failed to create zone");
-    }
-    if (!tgt->getDomainInfo(di.zone, di_new)) {
-      throw PDNSException("Failed to create zone");
-    }
-    // move records
-    if (!src->list(di.zone, di.id, true)) {
-      throw PDNSException("Failed to list records");
-    }
-    nr=0;
 
-    tgt->startTransaction(di.zone, di_new.id);
-
-    while(src->get(rr)) {
-      rr.domain_id = di_new.id;
-      if (!tgt->feedRecord(rr, DNSName())) {
-        throw PDNSException("Failed to feed record");
-      }
-      nr++;
-    }
-
-    // move comments
-    nc=0;
-    if (src->listComments(di.id)) {
-      if ((tgt->getCapabilities() & DNSBackend::CAP_COMMENTS) == 0) {
-        throw PDNSException("Target backend does not support comments - remove them first");
-      }
-      Comment c; // NOLINT(readability-identifier-length)
-      while(src->getComment(c)) {
-        c.domain_id = di_new.id;
-        if (!tgt->feedComment(c)) {
-          throw PDNSException("Failed to feed zone comments");
-        }
-        nc++;
-      }
-    }
-    // move metadata
-    nm=0;
-    std::map<std::string, std::vector<std::string> > meta;
-    if (src->getAllDomainMetadata(di.zone, meta)) {
-      for (const auto& i : meta) { // NOLINT(readability-identifier-length)
-        if (!tgt->setDomainMetadata(di.zone, i.first, i.second)) {
-          throw PDNSException("Failed to feed zone metadata");
-        }
-        nm++;
-      }
-    }
-    // move keys
-    nk=0;
-    // temp var for KeyID
-    int64_t keyID{-1};
-    std::vector<DNSBackend::KeyData> keys;
-    if (src->getDomainKeys(di.zone, keys)) {
-      for(const DNSBackend::KeyData& k: keys) { // NOLINT(readability-identifier-length)
-        tgt->addDomainKey(di.zone, k, keyID);
-        nk++;
-      }
-    }
-    tgt->commitTransaction();
-    cout<<"Moved "<<nr<<" record(s), "<<nc<<" comment(s), "<<nm<<" metadata(s) and "<<nk<<" cryptokey(s)"<<endl;
+    copyZoneContents(di, di.zone, tgt.get());
   }
 
   int ntk=0;
@@ -5106,7 +5403,7 @@ static int B2BMigrate(vector<string>& cmds, const std::string_view synopsis)
   }
   cout<<"Moved "<<ntk<<" TSIG key(s)"<<endl;
 
-  cout<<"Remember to drop the old backend and run rectify-all-zones"<<endl;
+  cout<<"Remember to drop the old backend and run 'pdnsutil zone rectify-all'"<<endl;
 
   return 0;
 }
@@ -5136,7 +5433,9 @@ static int backendCmd(vector<string>& cmds, const std::string_view synopsis)
   }
 
   for (auto i = next(begin(cmds), 1); i != end(cmds); ++i) {
-    cerr << "== " << *i << endl;
+    if (cmds.size() != 2 && !g_quiet) {
+      cerr << "== " << *i << endl;
+    }
     cout << matchingBackend->directBackendCmd(*i);
   }
 
@@ -5197,7 +5496,7 @@ static int backendLookup(vector<string>& cmds, const std::string_view synopsis)
   bool found = false;
   DNSZoneRecord resultZoneRecord;
   while (matchingBackend->get(resultZoneRecord)) {
-    cout << resultZoneRecord.dr.d_name.toString() << "\t" << std::to_string(resultZoneRecord.dr.d_ttl) << "\t" << QClass(resultZoneRecord.dr.d_class).toString() << "\t" << DNSRecordContent::NumberToType(resultZoneRecord.dr.d_type, resultZoneRecord.dr.d_class) << "\t" << resultZoneRecord.dr.getContent()->getZoneRepresentation();
+    cout << formatRecord(resultZoneRecord.dr, " ");
     if (resultZoneRecord.scopeMask > 0) {
       clientNetmask.setBits(resultZoneRecord.scopeMask);
       cout << "\t" << "; " << clientNetmask.toString();
@@ -5225,6 +5524,11 @@ static int listView(vector<string>& cmds, const std::string_view synopsis)
 
   UtilBackend B("default"); //NOLINT(readability-identifier-length)
 
+  if ((B.getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    cerr << "None of the configured backends support views." << endl;
+    return 1;
+  }
+
   vector<ZoneName> ret;
   B.viewListZones(cmds.at(0), ret);
 
@@ -5241,6 +5545,12 @@ static int listViews(vector<string>& cmds, const std::string_view synopsis)
   }
 
   UtilBackend B("default"); //NOLINT(readability-identifier-length)
+
+  if ((B.getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    // Don't complain about the lack of view support in this case, but
+    // don't list anything either.
+    return 0;
+  }
 
   vector<string> ret;
   B.viewList(ret);
@@ -5259,7 +5569,17 @@ static int viewAddZone(vector<string>& cmds, const std::string_view synopsis)
 
   UtilBackend B("default"); //NOLINT(readability-identifier-length)
 
+  if ((B.getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    cerr << "None of the configured backends support views." << endl;
+    return 1;
+  }
+
   string view{cmds.at(0)};
+  string error;
+  if (!Check::validateViewName(view, error)) {
+    cerr << error << "." << endl;
+    return 1;
+  }
   ZoneName zone{cmds.at(1)};
   if (!B.viewAddZone(view, zone)) {
     cerr<<"Operation failed."<<endl;
@@ -5269,7 +5589,7 @@ static int viewAddZone(vector<string>& cmds, const std::string_view synopsis)
     DomainInfo info;
     if (!B.getDomainInfo(zone, info)) {
       cout << "Zone '" << zone << "' does not exist yet."<< endl;
-      cout << "Consider creating it with 'pdnsutil create-zone " << zone << "'" << endl;
+      cout << "Consider creating it with 'pdnsutil zone create " << zone << "'" << endl;
     }
   }
   return 0;
@@ -5283,7 +5603,17 @@ static int viewDelZone(vector<string>& cmds, const std::string_view synopsis)
 
   UtilBackend B("default"); //NOLINT(readability-identifier-length)
 
+  if ((B.getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    cerr << "None of the configured backends support views." << endl;
+    return 1;
+  }
+
   string view{cmds.at(0)};
+  string error;
+  if (!Check::validateViewName(view, error)) {
+    cerr << error << "." << endl;
+    return 1;
+  }
   ZoneName zone{cmds.at(1)};
   if (!B.viewDelZone(view, zone)) {
     cerr<<"Operation failed."<<endl;
@@ -5299,6 +5629,11 @@ static int listNetwork(vector<string>& cmds, const std::string_view synopsis)
   }
 
   UtilBackend B("default"); //NOLINT(readability-identifier-length)
+
+  if ((B.getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    cerr << "None of the configured backends support views." << endl;
+    return 1;
+  }
 
   vector<pair<Netmask, string> > ret;
 
@@ -5317,6 +5652,11 @@ static int setNetwork(vector<string>& cmds, const std::string_view synopsis)
   }
 
   UtilBackend B("default"); //NOLINT(readability-identifier-length)
+
+  if ((B.getCapabilities() & DNSBackend::CAP_VIEWS) == 0) {
+    cerr << "None of the configured backends support views." << endl;
+    return 1;
+  }
 
   Netmask net{cmds.at(0)};
   string view{};
@@ -5656,7 +5996,7 @@ try
          << endl;
     for (const auto& group : topLevelDispatcher) {
       if (!group.second.first) { // toplevel synonyms (sugar), don't list
-	continue;
+        continue;
       }
       for (const auto& dispatcher : group.second.second) {
         displayCommandGroup(dispatcher, group.first);

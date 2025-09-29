@@ -222,7 +222,7 @@ static void declareArguments()
   ::arg().set("secondary-check-signature-freshness", "Check signatures in SOA freshness check. Sets DO flag on SOA queries. Outside some very problematic scenarios, say yes here.") = "yes";
 
   ::arg().set("tcp-control-address", "If set, PowerDNS can be controlled over TCP on this address") = "";
-  ::arg().set("tcp-control-port", "If set, PowerDNS can be controlled over TCP on this address") = "53000";
+  ::arg().set("tcp-control-port", "If set, PowerDNS can be controlled over TCP on this port") = "53000";
   ::arg().set("tcp-control-secret", "If set, PowerDNS can be controlled over TCP after passing this secret") = "";
   ::arg().set("tcp-control-range", "If set, remote control of PowerDNS is possible over these networks only") = "127.0.0.0/8, 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12, ::1/128, fe80::/10";
 
@@ -773,6 +773,14 @@ static void mainthread()
   if (g_views) {
     if (::arg().asNum("zone-cache-refresh-interval") == 0) {
       g_log << Logger::Error << R"(Error: use of views requires the zone cache to be enabled, please set "zone-cache-refresh-interval" to a nonzero value.)" << endl;
+      exit(1); // NOLINT(concurrency-mt-unsafe) we're single threaded at this point
+    }
+  }
+  // - configurations involving communicator threads need at least one
+  //   such thread configured
+  if (::arg().mustDo("primary") || ::arg().mustDo("secondary") || !::arg()["forward-notify"].empty()) {
+    if (::arg().asNum("retrieval-threads", 1) <= 0) {
+      g_log << Logger::Error << R"(Error: primary or secondary operation requires "retrieval-threads" to be set to a nonzero value.)" << endl;
       exit(1); // NOLINT(concurrency-mt-unsafe) we're single threaded at this point
     }
   }
@@ -1445,25 +1453,26 @@ int main(int argc, char** argv)
 
       writePid();
     }
-    DynListener::registerFunc("SHOW", &DLShowHandler, "show a specific statistic or * to get a list", "<statistic>");
-    DynListener::registerFunc("RPING", &DLPingHandler, "ping instance");
     DynListener::registerExitFunc("QUIT", &DLRQuitHandler);
-    DynListener::registerFunc("UPTIME", &DLUptimeHandler, "get instance uptime");
-    DynListener::registerFunc("NOTIFY-HOST", &DLNotifyHostHandler, "notify host for specific zone", "<zone> <host>");
-    DynListener::registerFunc("NOTIFY", &DLNotifyHandler, "queue a notification", "<zone>");
-    DynListener::registerFunc("RELOAD", &DLReloadHandler, "reload all zones");
-    DynListener::registerFunc("REDISCOVER", &DLRediscoverHandler, "discover any new zones");
-    DynListener::registerFunc("VERSION", &DLVersionHandler, "get instance version");
-    DynListener::registerFunc("PURGE", &DLPurgeHandler, "purge entries from packet cache", "[<record>]");
     DynListener::registerFunc("CCOUNTS", &DLCCHandler, "get cache statistics");
-    DynListener::registerFunc("QTYPES", &DLQTypesHandler, "get QType statistics");
-    DynListener::registerFunc("RESPSIZES", &DLRSizesHandler, "get histogram of response sizes");
-    DynListener::registerFunc("REMOTES", &DLRemotesHandler, "get top remotes");
-    DynListener::registerFunc("SET", &DLSettingsHandler, "set config variables", "<var> <value>");
-    DynListener::registerFunc("RETRIEVE", &DLNotifyRetrieveHandler, "retrieve secondary zone", "<zone> [<ip>]");
     DynListener::registerFunc("CURRENT-CONFIG", &DLCurrentConfigHandler, "retrieve the current configuration", "[diff]");
+    DynListener::registerFunc("FLUSH", &DLFlushHandler, "flush backend data");
     DynListener::registerFunc("LIST-ZONES", &DLListZones, "show list of zones", "[primary|secondary|native|consumer|producer]");
+    DynListener::registerFunc("NOTIFY", &DLNotifyHandler, "queue a notification", "<zone>");
+    DynListener::registerFunc("NOTIFY-HOST", &DLNotifyHostHandler, "notify host for specific zone", "<zone> <host>");
+    DynListener::registerFunc("PURGE", &DLPurgeHandler, "purge entries from packet cache", "[<record>]");
+    DynListener::registerFunc("QTYPES", &DLQTypesHandler, "get QType statistics");
+    DynListener::registerFunc("REDISCOVER", &DLRediscoverHandler, "discover any new zones");
+    DynListener::registerFunc("RELOAD", &DLReloadHandler, "reload all zones");
+    DynListener::registerFunc("REMOTES", &DLRemotesHandler, "get top remotes");
+    DynListener::registerFunc("RESPSIZES", &DLRSizesHandler, "get histogram of response sizes");
+    DynListener::registerFunc("RETRIEVE", &DLNotifyRetrieveHandler, "retrieve secondary zone", "<zone> [<ip>]");
+    DynListener::registerFunc("RPING", &DLPingHandler, "ping instance");
+    DynListener::registerFunc("SET", &DLSettingsHandler, "set config variables", "<var> <value>");
+    DynListener::registerFunc("SHOW", &DLShowHandler, "show a specific statistic or * to get a list", "<statistic>");
     DynListener::registerFunc("TOKEN-LOGIN", &DLTokenLogin, "Login to a PKCS#11 token", "<module> <slot> <pin>");
+    DynListener::registerFunc("UPTIME", &DLUptimeHandler, "get instance uptime");
+    DynListener::registerFunc("VERSION", &DLVersionHandler, "get instance version");
     DynListener::registerFunc("XFR-QUEUE", &DLSuckRequests, "Get all requests for XFR in queue");
 
     if (!::arg()["tcp-control-address"].empty()) {

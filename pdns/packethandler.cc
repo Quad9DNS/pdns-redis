@@ -416,7 +416,9 @@ bool PacketHandler::getBestWildcard(DNSPacket& p, const DNSName &target, DNSName
     }
     while(B.get(rr)) {
       if (haveCNAME) {
-        continue;
+        // No need to look any further
+        B.lookupEnd();
+        break;
       }
 #ifdef HAVE_LUA_RECORDS
       if (rr.dr.d_type == QType::LUA && !isPresigned()) {
@@ -932,9 +934,13 @@ void PacketHandler::addNSEC3(DNSPacket& p, std::unique_ptr<DNSPacket>& r, const 
       DNSZoneRecord rr;
       while( closest.chopOff() && (closest != d_sd.qname()))  { // stop at SOA
         B.lookup(QType(QType::ANY), closest, d_sd.domain_id, &p);
-        while(B.get(rr))
-          if (rr.auth)
+        while (B.get(rr)) {
+          if (rr.auth) {
+            B.lookupEnd();
             doBreak = true;
+            break;
+          }
+        }
         if(doBreak)
           break;
       }
@@ -1978,9 +1984,9 @@ bool PacketHandler::opcodeQueryInner2(DNSPacket& pkt, queryState &state, bool re
     }
     // check whether this could be fixed easily
     // if (*(rrset.back().dr.d_name.rbegin()) == '.') {
-    //      g_log<<Logger::Error<<"Should not get here ("<<pkt.qdomain<<"|"<<pkt.qtype.toString()<<"): you have a trailing dot, this could be the problem (or run pdnsutil rectify-zone " <<d_sd.qname()<<")"<<endl;
+    //      g_log<<Logger::Error<<"Should not get here ("<<pkt.qdomain<<"|"<<pkt.qtype.toString()<<"): you have a trailing dot, this could be the problem (or run 'pdnsutil zone rectify " <<d_sd.qname()<<"')"<<endl;
     // } else {
-         g_log<<Logger::Error<<"Should not get here ("<<pkt.qdomain<<"|"<<pkt.qtype.toString()<<"): please run pdnsutil rectify-zone "<<d_sd.qname()<<endl;
+         g_log<<Logger::Error<<"Should not get here ("<<pkt.qdomain<<"|"<<pkt.qtype.toString()<<"): please run 'pdnsutil zone rectify "<<d_sd.qname()<<"'"<<endl;
     // }
   }
   else {

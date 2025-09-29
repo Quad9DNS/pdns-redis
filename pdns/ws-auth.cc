@@ -53,6 +53,7 @@
 #include "auth-zonecache.hh"
 #include "threadname.hh"
 #include "tsigutils.hh"
+#include "check-zone.hh"
 
 using json11::Json;
 
@@ -92,16 +93,7 @@ double Ewma::getMax() const
   return d_max;
 }
 
-static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInfo& domainInfo, HttpRequest* req, HttpResponse* resp);
-
-// QTypes that MUST NOT have multiple records of the same type in a given RRset.
-static const std::set<uint16_t> onlyOneEntryTypes = {QType::CNAME, QType::DNAME, QType::SOA};
-// QTypes that MUST NOT be used with any other QType on the same name.
-static const std::set<uint16_t> exclusiveEntryTypes = {QType::CNAME};
-// QTypes that MUST be at apex.
-static const std::set<uint16_t> atApexTypes = {QType::SOA, QType::DNSKEY};
-// QTypes that are NOT allowed at apex.
-static const std::set<uint16_t> nonApexTypes = {QType::DS};
+static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInfo& domainInfo, const vector<Json>& rrsets, HttpResponse* resp);
 
 AuthWebServer::AuthWebServer() :
   d_start(time(nullptr))
@@ -439,6 +431,10 @@ static void fillZone(UeberBackend& backend, const ZoneName& zonename, HttpRespon
   Json::array tsig_secondary_keys;
   for (const auto& keyname : tsig_secondary) {
     tsig_secondary_keys.emplace_back(apiNameToId(keyname));
+    // Although AXFR-MASTER-TSIG may contain a list of keys, the current
+    // state of DNSSECKeeper::getTSIGForAccess() causes only the first one
+    // to be ever used, so only return the first item here.
+    break;
   }
   doc["slave_tsig_key_ids"] = tsig_secondary_keys;
 
@@ -525,9 +521,21 @@ static void fillZone(UeberBackend& backend, const ZoneName& zonename, HttpRespon
 
       while (rit != records.end() && rit->qname == current_qname && rit->qtype == current_qtype) {
         ttl = min(ttl, rit->ttl);
+        std::string content;
+        try {
+          content = makeApiRecordContent(rit->qtype, rit->content);
+        }
+        catch (std::exception& e) {
+          // makeApiRecordContent may throw an exception if the backend data
+          // is not well-formed (e.g. corrupted bind zone file).
+          // The exception gets caught here and rethrown as ApiException in
+          // order to return a 422 error code with a (hopefully) useful error
+          // message instead of a 500 error.
+          throw ApiException("Ill-formed record contents found for " + current_qname.toString() + ": " + e.what());
+        }
         auto object = Json::object{
           {"disabled", rit->disabled},
-          {"content", makeApiRecordContent(rit->qtype, rit->content)}};
+          {"content", content}};
         if (rit->last_modified != 0) {
           object["modified_at"] = (double)rit->last_modified;
         }
@@ -588,6 +596,56 @@ static void validateGatheredRRType(const DNSResourceRecord& resourceRecord)
   }
 }
 
+// Clean and unescape a record content string, in order to minimize the
+// risk of mismatch between it and its canonical form returned by
+// makeApiRecordContent().
+// To do so, we remove leading and trailing whitespace, and perform
+// RFC1035 processing on the data until all the chunks have been processed.
+static std::string normalizeJsonString(const std::string& jsonContent)
+{
+  std::ostringstream ret;
+
+  std::string copy{jsonContent};
+  // Trim surrounding whitespace
+  boost::trim_right(copy);
+  boost::trim_left(copy);
+
+  std::string_view input{copy};
+  auto len = input.size();
+  size_t pos = 0;
+  while (pos < len) {
+    std::string chunk;
+    // Preserve quotes in the result if the chunk is quoted.
+    bool quote = input[pos] == '"';
+    auto chunksize = parseRFC1035CharString(input.substr(pos), chunk);
+    if (quote) {
+      ret << '"';
+    }
+    // We would love to simply feed chunk to ret here, but unfortunately
+    // we need to RFC1035 escape non-printable characters again.
+    for (char chr : chunk) {
+      if (chr >= 0x20 && chr < 0x7f) {
+        ret << chr;
+      }
+      else {
+        ret << '\\' << std::setfill('0') << std::setw(3) << static_cast<unsigned int>(chr) << std::setw(0);
+      }
+    }
+    if (quote) {
+      ret << '"';
+    }
+    pos += chunksize;
+    // Keep only one space for space-separated chunks.
+    if (pos < len && std::isspace(static_cast<unsigned char>(input[pos])) != 0) {
+      while (pos < len && std::isspace(static_cast<unsigned char>(input[pos])) != 0) {
+        ++pos;
+      }
+      ret << ' ';
+    }
+  }
+  return ret.str();
+}
+
 static void gatherRecords(const Json& container, const DNSName& qname, const QType& qtype, const uint32_t ttl, vector<DNSResourceRecord>& new_records)
 {
   DNSResourceRecord resourceRecord;
@@ -599,7 +657,7 @@ static void gatherRecords(const Json& container, const DNSName& qname, const QTy
   validateGatheredRRType(resourceRecord);
   const auto& items = container["records"].array_items();
   for (const auto& record : items) {
-    string content = stringFromJson(record, "content");
+    string content = normalizeJsonString(stringFromJson(record, "content"));
     if (record.object_items().count("priority") > 0) {
       throw std::runtime_error("`priority` element is not allowed in record");
     }
@@ -948,6 +1006,9 @@ static void updateDomainSettingsFromDocument(UeberBackend& backend, DomainInfo& 
   if (!document["slave_tsig_key_ids"].is_null()) {
     vector<string> metadata;
     extractJsonTSIGKeyIds(backend, document["slave_tsig_key_ids"], metadata);
+    if (metadata.size() > 1) {
+      throw ApiException("Only one TSIG secondary key is currently allowed");
+    }
     if (!domainInfo.backend->setDomainMetadata(zonename, "AXFR-MASTER-TSIG", metadata)) {
       throw HttpInternalServerErrorException("Unable to set new TSIG secondary keys for zone '" + zonename.toString() + "'");
     }
@@ -973,6 +1034,7 @@ static bool isValidMetadataKind(const string& kind, bool readonly)
     {"PRESIGNED", true},
     {"PUBLISH-CDNSKEY", false},
     {"PUBLISH-CDS", false},
+    {"RFC1123-CONFORMANCE", false},
     {"SIGNALING-ZONE", false},
     {"SLAVE-RENOTIFY", false},
     {"SOA-EDIT", true},
@@ -1613,57 +1675,42 @@ static void gatherRecordsFromZone(const std::string& zonestring, vector<DNSResou
   }
 }
 
-/** Throws ApiException if records which violate RRset constraints are present.
- *  NOTE: sorts records in-place.
- *
- *  Constraints being checked:
- *   *) no exact duplicates
- *   *) no duplicates for QTypes that can only be present once per RRset
- *   *) hostnames are hostnames
- */
-static void checkNewRecords(vector<DNSResourceRecord>& records, const ZoneName& zone)
+static bool areUnderscoresAllowed(const ZoneName& zonename, DNSBackend& backend)
 {
-  sort(records.begin(), records.end(),
-       [](const DNSResourceRecord& rec_a, const DNSResourceRecord& rec_b) -> bool {
-         /* we need _strict_ weak ordering */
-         return std::tie(rec_a.qname, rec_a.qtype, rec_a.content) < std::tie(rec_b.qname, rec_b.qtype, rec_b.content);
-       });
+  string underscores{};
+  backend.getDomainMetadataOne(zonename, "RFC1123-CONFORMANCE", underscores);
+  // Metadata absent implies strict conformance
+  return underscores == "0";
+}
 
-  DNSResourceRecord previous;
-  for (const auto& rec : records) {
-    if (previous.qname == rec.qname) {
-      if (previous.qtype == rec.qtype) {
-        if (onlyOneEntryTypes.count(rec.qtype.getCode()) != 0) {
-          throw ApiException("RRset " + rec.qname.toString() + " IN " + rec.qtype.toString() + " has more than one record");
-        }
-        if (previous.content == rec.content) {
-          throw ApiException("Duplicate record in RRset " + rec.qname.toString() + " IN " + rec.qtype.toString() + " with content \"" + rec.content + "\"");
-        }
-      }
-      else if (exclusiveEntryTypes.count(rec.qtype.getCode()) != 0 || exclusiveEntryTypes.count(previous.qtype.getCode()) != 0) {
-        throw ApiException("RRset " + rec.qname.toString() + " IN " + rec.qtype.toString() + ": Conflicts with another RRset");
-      }
-    }
+// Wrapper around checkRRSet; returns true if all checks successful, false if
+// not, in which case the response body and status have been filled up.
+static bool checkNewRecords(HttpResponse* resp, vector<DNSResourceRecord>& records, const ZoneName& zone, bool allowUnderscores)
+{
+  std::vector<std::pair<DNSResourceRecord, string>> errors;
 
-    if (rec.qname == zone.operator const DNSName&()) {
-      if (nonApexTypes.count(rec.qtype.getCode()) != 0) {
-        throw ApiException("Record " + rec.qname.toString() + " IN " + rec.qtype.toString() + " is not allowed at apex");
-      }
-    }
-    else if (atApexTypes.count(rec.qtype.getCode()) != 0) {
-      throw ApiException("Record " + rec.qname.toString() + " IN " + rec.qtype.toString() + " is only allowed at apex");
-    }
-
-    // Check if the DNSNames that should be hostnames, are hostnames
-    try {
-      checkHostnameCorrectness(rec);
-    }
-    catch (const std::exception& e) {
-      throw ApiException("RRset " + rec.qname.toString() + " IN " + rec.qtype.toString() + ": " + e.what());
-    }
-
-    previous = rec;
+  Check::checkRRSet({}, records, zone, allowUnderscores, errors);
+  if (errors.empty()) {
+    return true;
   }
+
+  Json::array errs;
+  for (const auto& error : errors) {
+    const auto& [rec, why] = error;
+    errs.emplace_back(std::string{"RRset "} + rec.qname.toString() + " IN " + rec.qtype.toString() + ": " + why);
+  }
+
+  Json::object body;
+  if (errs.size() == 1) {
+    body["error"] = errs[0];
+  }
+  else {
+    body["error"] = "Multiple errors found in RRset";
+    body["errors"] = errs;
+  }
+  resp->setJsonBody(body);
+  resp->status = 422;
+  return false;
 }
 
 static void checkTSIGKey(UeberBackend& backend, const DNSName& keyname, const DNSName& algo, const string& content)
@@ -2016,7 +2063,9 @@ static void apiServerZonesPOST(HttpRequest* req, HttpResponse* resp)
     }
   }
 
-  checkNewRecords(new_records, zonename);
+  if (!checkNewRecords(resp, new_records, zonename, false)) { // no RFC1123-CONFORMANCE metadata on new zones
+    return;
+  }
 
   if (boolFromJson(document, "dnssec", false)) {
     checkDefaultDNSSECAlgos();
@@ -2190,7 +2239,10 @@ static void apiServerZoneDetailPUT(HttpRequest* req, HttpResponse* resp)
       throw ApiException("Modifying RRsets in Consumer zones is unsupported");
     }
 
-    checkNewRecords(new_records, zoneData.zoneName);
+    bool allowUnderscores = areUnderscoresAllowed(zoneData.zoneName, *zoneData.domainInfo.backend);
+    if (!checkNewRecords(resp, new_records, zoneData.zoneName, allowUnderscores)) {
+      return;
+    }
 
     zoneData.domainInfo.backend->startTransaction(zoneData.zoneName, zoneData.domainInfo.id);
     for (auto& resourceRecord : new_records) {
@@ -2254,7 +2306,14 @@ static void apiServerZoneDetailDELETE(HttpRequest* req, HttpResponse* resp)
 static void apiServerZoneDetailPATCH(HttpRequest* req, HttpResponse* resp)
 {
   ZoneData zoneData{req};
-  patchZone(zoneData.backend, zoneData.zoneName, zoneData.domainInfo, req, resp);
+  Json document = req->json();
+
+  auto rrsets = document["rrsets"];
+  if (!rrsets.is_array()) {
+    throw ApiException("No rrsets given in update request");
+  }
+
+  patchZone(zoneData.backend, zoneData.zoneName, zoneData.domainInfo, rrsets.array_items(), resp);
 }
 
 static void apiServerZoneDetailGET(HttpRequest* req, HttpResponse* resp)
@@ -2277,9 +2336,21 @@ static void apiServerZoneExport(HttpRequest* req, HttpResponse* resp)
       continue; // skip empty non-terminals
     }
 
+    std::string content;
+    try {
+      content = makeApiRecordContent(resourceRecord.qtype, resourceRecord.content);
+    }
+    catch (std::exception& e) {
+      // makeApiRecordContent may throw an exception if the backend data
+      // is not well-formed (e.g. corrupted bind zone file).
+      // The exception gets caught here and rethrown as ApiException in
+      // order to return a 422 error code with a (hopefully) useful error
+      // message instead of a 500 error.
+      throw ApiException("Ill-formed record contents found for " + resourceRecord.qname.toString() + ": " + e.what());
+    }
     outputStringStream << resourceRecord.qname.toString() << "\t" << resourceRecord.ttl << "\t"
                        << "IN"
-                       << "\t" << resourceRecord.qtype.toString() << "\t" << makeApiRecordContent(resourceRecord.qtype, resourceRecord.content) << endl;
+                       << "\t" << resourceRecord.qtype.toString() << "\t" << content << endl;
   }
 
   if (req->accept_json) {
@@ -2332,36 +2403,81 @@ static void apiServerZoneRectify(HttpRequest* req, HttpResponse* resp)
   resp->setSuccessResult("Rectified");
 }
 
-// NOLINTNEXTLINE(readability-function-cognitive-complexity): TODO Refactor this function.
-static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInfo& domainInfo, HttpRequest* req, HttpResponse* resp)
+// Validate the "changetype" field of a Json patch record.
+// Returns true if this is a replace operation, false if this is a delete
+// operation.
+// Throws an exception if unrecognized.
+static bool validateChangeType(const Json& rrset)
 {
-  bool zone_disabled = false;
-  SOAData soaData;
-
-  vector<DNSResourceRecord> new_records;
-  vector<Comment> new_comments;
-  vector<DNSResourceRecord> new_ptrs;
-
-  Json document = req->json();
-
-  auto rrsets = document["rrsets"];
-  if (!rrsets.is_array()) {
-    throw ApiException("No rrsets given in update request");
+  string changetype = toUpper(stringFromJson(rrset, "changetype"));
+  if (changetype == "DELETE") {
+    return false;
   }
+  if (changetype == "REPLACE") {
+    return true;
+  }
+  throw ApiException("Changetype not understood");
+}
 
+// Replace the rrset for `qname' in zone `zonename' with the contents of
+// `new_records', making sure to remove no longer needed ENT entries, and
+// also enforcing the exclusivity rules (at most one CNAME, DNAME and SOA,
+// etc).
+static void replaceZoneRecords(DomainInfo& domainInfo, const ZoneName& zonename, vector<DNSResourceRecord>& new_records, const DNSName& qname, const QType qtype)
+{
+  bool ent_present = false;
+  bool dname_seen = qtype == QType::DNAME;
+  bool ns_seen = qtype == QType::NS;
+
+  domainInfo.backend->APILookup(QType(QType::ANY), qname, static_cast<int>(domainInfo.id), false);
+  DNSResourceRecord resourceRecord;
+  while (domainInfo.backend->get(resourceRecord)) {
+    if (resourceRecord.qtype.getCode() == QType::ENT) {
+      ent_present = true;
+      // that's fine, we will override it
+      continue;
+    }
+    dname_seen |= resourceRecord.qtype == QType::DNAME;
+    ns_seen |= resourceRecord.qtype == QType::NS;
+    if (qtype.getCode() != resourceRecord.qtype.getCode()
+        && (QType::exclusiveEntryTypes.count(qtype.getCode()) != 0
+            || QType::exclusiveEntryTypes.count(resourceRecord.qtype.getCode()) != 0)) {
+      // leave database handle in a consistent state
+      domainInfo.backend->lookupEnd();
+      throw ApiException("RRset " + qname.toString() + " IN " + qtype.toString() + ": Conflicts with pre-existing RRset");
+    }
+  }
+  if (dname_seen && ns_seen && qname != zonename.operator const DNSName&()) {
+    throw ApiException("RRset " + qname.toString() + " IN " + qtype.toString() + ": Cannot have both NS and DNAME except in zone apex");
+  }
+  if (!new_records.empty() && ent_present) {
+    QType qt_ent{QType::ENT};
+    if (!domainInfo.backend->replaceRRSet(domainInfo.id, qname, qt_ent, new_records)) {
+      throw ApiException("Hosting backend does not support editing records.");
+    }
+  }
+  if (!domainInfo.backend->replaceRRSet(domainInfo.id, qname, qtype, new_records)) {
+    throw ApiException("Hosting backend does not support editing records.");
+  }
+}
+
+static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInfo& domainInfo, const vector<Json>& rrsets, HttpResponse* resp)
+{
   domainInfo.backend->startTransaction(zonename);
-
   try {
     string soa_edit_api_kind;
     string soa_edit_kind;
     domainInfo.backend->getDomainMetadataOne(zonename, "SOA-EDIT-API", soa_edit_api_kind);
     domainInfo.backend->getDomainMetadataOne(zonename, "SOA-EDIT", soa_edit_kind);
     bool soa_edit_done = false;
+    bool allowUnderscores = areUnderscoresAllowed(zonename, *domainInfo.backend);
 
-    set<std::tuple<DNSName, QType, string>> seen;
+    vector<DNSResourceRecord> new_records;
+    vector<Comment> new_comments;
+    set<std::tuple<DNSName, QType, bool>> seen;
 
-    for (const auto& rrset : rrsets.array_items()) {
-      string changetype = toUpper(stringFromJson(rrset, "changetype"));
+    for (const auto& rrset : rrsets) {
+      bool isReplaceOperation = validateChangeType(rrset);
       DNSName qname = apiNameToDNSName(stringFromJson(rrset, "name"));
       apiCheckQNameAllowedCharacters(qname.toString());
       QType qtype;
@@ -2370,18 +2486,22 @@ static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInf
         throw ApiException("RRset " + qname.toString() + " IN " + stringFromJson(rrset, "type") + ": unknown type given");
       }
 
-      if (seen.count({qname, qtype, changetype}) != 0) {
-        throw ApiException("Duplicate RRset " + qname.toString() + " IN " + qtype.toString() + " with changetype: " + changetype);
+      if (seen.count({qname, qtype, isReplaceOperation}) != 0) {
+        throw ApiException("Duplicate RRset " + qname.toString() + " IN " + qtype.toString() + " with changetype: " + (isReplaceOperation ? "replace" : "delete"));
       }
-      seen.insert({qname, qtype, changetype});
+      seen.insert({qname, qtype, isReplaceOperation});
 
-      if (changetype == "DELETE") {
+      if (!isReplaceOperation) {
         // delete all matching qname/qtype RRs (and, implicitly comments).
         if (!domainInfo.backend->replaceRRSet(domainInfo.id, qname, qtype, vector<DNSResourceRecord>())) {
           throw ApiException("Hosting backend does not support editing records.");
         }
       }
-      else if (changetype == "REPLACE") {
+      else {
+        if (domainInfo.kind == DomainInfo::Consumer) {
+          // Allow deleting all RRsets, just not modifying them.
+          throw ApiException("Modifying RRsets in Consumer zones is unsupported");
+        }
         // we only validate for REPLACE, as DELETE can be used to "fix" out of zone records.
         if (!qname.isPartOf(zonename)) {
           throw ApiException("RRset " + qname.toString() + " IN " + qtype.toString() + ": Name is out of zone");
@@ -2399,7 +2519,7 @@ static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInf
 
         try {
           if (replace_records) {
-            // ttl shouldn't be part of DELETE, and it shouldn't be required if we don't get new records.
+            // ttl shouldn't be required if we don't get new records.
             uint32_t ttl = uintFromJson(rrset, "ttl");
             gatherRecords(rrset, qname, qtype, ttl, new_records);
 
@@ -2409,7 +2529,9 @@ static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInf
                 soa_edit_done = increaseSOARecord(resourceRecord, soa_edit_api_kind, soa_edit_kind, zonename);
               }
             }
-            checkNewRecords(new_records, zonename);
+            if (!checkNewRecords(resp, new_records, zonename, allowUnderscores)) {
+              return;
+            }
           }
 
           if (replace_comments) {
@@ -2425,53 +2547,7 @@ static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInf
         }
 
         if (replace_records) {
-          bool ent_present = false;
-          bool dname_seen = false;
-          bool ns_seen = false;
-
-          domainInfo.backend->APILookup(QType(QType::ANY), qname, static_cast<int>(domainInfo.id), false);
-          DNSResourceRecord resourceRecord;
-          while (domainInfo.backend->get(resourceRecord)) {
-            if (resourceRecord.qtype.getCode() == QType::ENT) {
-              ent_present = true;
-              /* that's fine, we will override it */
-              continue;
-            }
-            if (qtype == QType::DNAME || resourceRecord.qtype == QType::DNAME) {
-              dname_seen = true;
-            }
-            if (qtype == QType::NS || resourceRecord.qtype == QType::NS) {
-              ns_seen = true;
-            }
-            if (qtype.getCode() != resourceRecord.qtype.getCode()
-                && (exclusiveEntryTypes.count(qtype.getCode()) != 0
-                    || exclusiveEntryTypes.count(resourceRecord.qtype.getCode()) != 0)) {
-
-              // leave database handle in a consistent state
-              while (domainInfo.backend->get(resourceRecord)) {
-                ;
-              }
-
-              throw ApiException("RRset " + qname.toString() + " IN " + qtype.toString() + ": Conflicts with pre-existing RRset");
-            }
-          }
-
-          if (dname_seen && ns_seen && qname != zonename.operator const DNSName&()) {
-            throw ApiException("RRset " + qname.toString() + " IN " + qtype.toString() + ": Cannot have both NS and DNAME except in zone apex");
-          }
-          if (!new_records.empty() && domainInfo.kind == DomainInfo::Consumer) {
-            // Allow deleting all RRsets, just not modifying them.
-            throw ApiException("Modifying RRsets in Consumer zones is unsupported");
-          }
-          if (!new_records.empty() && ent_present) {
-            QType qt_ent{0};
-            if (!domainInfo.backend->replaceRRSet(domainInfo.id, qname, qt_ent, new_records)) {
-              throw ApiException("Hosting backend does not support editing records.");
-            }
-          }
-          if (!domainInfo.backend->replaceRRSet(domainInfo.id, qname, qtype, new_records)) {
-            throw ApiException("Hosting backend does not support editing records.");
-          }
+          replaceZoneRecords(domainInfo, zonename, new_records, qname, qtype);
         }
         if (replace_comments) {
           if (!domainInfo.backend->replaceComments(domainInfo.id, qname, qtype, new_comments)) {
@@ -2479,12 +2555,10 @@ static void patchZone(UeberBackend& backend, const ZoneName& zonename, DomainInf
           }
         }
       }
-      else {
-        throw ApiException("Changetype not understood");
-      }
     }
 
-    zone_disabled = (!backend.getSOAUncached(zonename, soaData));
+    SOAData soaData;
+    bool zone_disabled = (!backend.getSOAUncached(zonename, soaData));
 
     // edit SOA (if needed)
     if (!zone_disabled && !soa_edit_api_kind.empty() && !soa_edit_done) {
@@ -2593,13 +2667,25 @@ static void apiServerSearchData(HttpRequest* req, HttpResponse* resp)
         continue; // skip empty non-terminals
       }
 
+      std::string content;
+      try {
+        content = makeApiRecordContent(resourceRecord.qtype, resourceRecord.content);
+      }
+      catch (std::exception& e) {
+        // makeApiRecordContent may throw an exception if the backend data
+        // is not well-formed (e.g. corrupted bind zone file).
+        // The exception gets caught here and rethrown as ApiException in
+        // order to return a 422 error code with a (hopefully) useful error
+        // message instead of a 500 error.
+        throw ApiException("Ill-formed record contents found for " + resourceRecord.qname.toString() + ": " + e.what());
+      }
       auto object = Json::object{
         {"object_type", "record"},
         {"name", resourceRecord.qname.toString()},
         {"type", resourceRecord.qtype.toString()},
         {"ttl", (double)resourceRecord.ttl},
         {"disabled", resourceRecord.disabled},
-        {"content", makeApiRecordContent(resourceRecord.qtype, resourceRecord.content)}};
+        {"content", content}};
       if (resourceRecord.last_modified != 0) {
         object["modified_at"] = (double)resourceRecord.last_modified;
       }
@@ -2751,6 +2837,10 @@ static void apiServerViewsPOST(HttpRequest* req, HttpResponse* resp)
     throw ApiException("Zone " + zonename.toString() + " does not exist");
   }
   std::string view{req->parameters["view"]};
+  std::string error;
+  if (!Check::validateViewName(view, error)) {
+    throw ApiException(error);
+  }
 
   if (!domainInfo.backend->viewAddZone(view, zonename)) {
     throw ApiException("Failed to add " + zonename.toString() + " to view " + view);
@@ -2775,6 +2865,10 @@ static void apiServerViewsDELETE(HttpRequest* req, HttpResponse* resp)
 {
   ZoneData zoneData{req};
   std::string view{req->parameters["view"]};
+  std::string error;
+  if (!Check::validateViewName(view, error)) {
+    throw ApiException(error);
+  }
 
   if (!zoneData.domainInfo.backend->viewDelZone(view, zoneData.zoneName)) {
     throw ApiException("Failed to remove " + zoneData.zoneName.toString() + " from view " + view);

@@ -102,6 +102,7 @@ public:
   void APILookup(const QType& type, const DNSName& qdomain, domainid_t zoneId, bool include_disabled = false) override { lookupInternal(type, qdomain, zoneId, nullptr, include_disabled); }
   bool get(DNSResourceRecord& rr) override;
   bool get(DNSZoneRecord& dzr) override;
+  void lookupEnd() override;
 
   // secondary support
   void getUnfreshSecondaryInfos(vector<DomainInfo>* domains) override;
@@ -164,6 +165,8 @@ public:
   bool updateDNSSECOrderNameAndAuth(domainid_t domain_id, const DNSName& qname, const DNSName& ordername, bool auth, const uint16_t qtype, bool isNsec3) override;
 
   bool updateEmptyNonTerminals(domainid_t domain_id, set<DNSName>& insert, set<DNSName>& erase, bool remove) override;
+
+  void flush() override;
 
   // other
   string directBackendCmd(const string& query) override;
@@ -317,9 +320,6 @@ private:
   };
 
   vector<RecordsDB> d_trecords;
-  ;
-
-  std::shared_ptr<MDBROCursor> d_getcursor;
 
   shared_ptr<tdomains_t> d_tdomains;
   shared_ptr<tmeta_t> d_tmeta;
@@ -338,28 +338,74 @@ private:
   bool genChangeDomain(domainid_t id, const std::function<void(DomainInfo&)>& func);
   static void deleteDomainRecords(RecordsRWTransaction& txn, const std::string& match, QType qtype = QType::ANY);
 
+  bool findDomain(const ZoneName& domain, DomainInfo& info) const;
+  bool findDomain(domainid_t domainid, DomainInfo& info) const;
+  void consolidateDomainInfo(DomainInfo& info) const;
+  void writeDomainInfo(const DomainInfo& info);
+
   void getAllDomainsFiltered(vector<DomainInfo>* domains, const std::function<bool(DomainInfo&)>& allow);
 
   void lookupStart(domainid_t domain_id, const std::string& match, bool dolog);
   void lookupInternal(const QType& type, const DNSName& qdomain, domainid_t zoneId, DNSPacket* p, bool include_disabled);
   bool getSerial(DomainInfo& di);
+  bool getInternal(DNSName& basename, std::string_view& key);
 
   static bool getAfterForward(MDBROCursor& cursor, MDBOutVal& key, MDBOutVal& val, domainid_t id, DNSName& after);
   static bool getAfterForwardFromStart(MDBROCursor& cursor, MDBOutVal& key, MDBOutVal& val, domainid_t id, DNSName& after);
-  static bool isNSEC3BackRecord(LMDBResourceRecord& lrr, const MDBOutVal& key, const MDBOutVal& val);
+  static bool isNSEC3BackRecord(const MDBOutVal& key, const MDBOutVal& val);
   static bool isValidAuthRecord(const MDBOutVal& key, const MDBOutVal& val);
   static bool hasOrphanedNSEC3Record(MDBRWCursor& cursor, domainid_t domain_id, const DNSName& qname);
   static void deleteNSEC3RecordPair(const std::shared_ptr<RecordsRWTransaction>& txn, domainid_t domain_id, const DNSName& qname);
   void writeNSEC3RecordPair(const std::shared_ptr<RecordsRWTransaction>& txn, domainid_t domain_id, const DNSName& qname, const DNSName& ordername);
 
-  ZoneName d_lookupdomain;
-  DNSName d_lookupsubmatch;
-  vector<LMDBResourceRecord> d_currentrrset;
-  size_t d_currentrrsetpos;
-  time_t d_currentrrsettime;
-  MDBOutVal d_currentKey;
-  MDBOutVal d_currentVal;
-  bool d_includedisabled;
+  string directBackendCmd_list(std::vector<string>& argv);
+
+  // Cache of DomainInfo notified_serial values
+  class SerialCache : public boost::noncopyable
+  {
+  public:
+    bool get(domainid_t domainid, uint32_t& serial) const;
+    void remove(domainid_t domainid);
+    void update(domainid_t domainid, uint32_t serial);
+    bool pop(domainid_t& domainid, uint32_t& serial);
+
+  private:
+    std::unordered_map<domainid_t, uint32_t> d_serials;
+  };
+  static SharedLockGuarded<SerialCache> s_notified_serial;
+
+  // Domain lookup shared state, set by list/lookup, used by get
+  struct
+  {
+    // current domain being processed (appended to the results' names)
+    ZoneName domain;
+    // relative name used for submatching (by listSubZone)
+    DNSName submatch;
+    // temporary vector of results (records found at the same cursor, i.e.
+    // same qname but possibly different qtype)
+    vector<LMDBResourceRecord> rrset;
+    // position in the above when returning its elements one by one
+    size_t rrsetpos;
+    // timestamp of rrset (can't be stored in DNSZoneRecord)
+    time_t rrsettime;
+    // database cursor
+    std::shared_ptr<MDBROCursor> cursor;
+    // database key at cursor
+    MDBOutVal key;
+    // database contents at cursor
+    MDBOutVal val;
+    // whether to include disabled records in the results
+    bool includedisabled;
+
+    void reset()
+    {
+      domain.clear();
+      submatch.clear();
+      rrset.clear();
+      rrsetpos = 0;
+      cursor.reset();
+    }
+  } d_lookupstate;
 
   ZoneName d_transactiondomain;
   domainid_t d_transactiondomainid;
@@ -367,6 +413,7 @@ private:
   bool d_random_ids;
   bool d_handle_dups;
   bool d_views;
+  bool d_write_notification_update;
   DTime d_dtime; // used only for logging
   uint64_t d_mapsize;
 };

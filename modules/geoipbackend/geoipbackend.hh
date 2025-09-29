@@ -67,6 +67,7 @@ public:
   void lookup(const QType& qtype, const DNSName& qdomain, domainid_t zoneId, DNSPacket* pkt_p = nullptr) override;
   bool list(const ZoneName& /* target */, domainid_t /* domain_id */, bool /* include_disabled */ = false) override { return false; } // not supported
   bool get(DNSResourceRecord& r) override;
+  void lookupEnd() override;
   void reload() override;
   void rediscover(string* status = nullptr) override;
   bool getDomainInfo(const ZoneName& domain, DomainInfo& info, bool getSerial = true) override;
@@ -92,7 +93,7 @@ private:
   bool hasDNSSECkey(const ZoneName& name);
   bool lookup_static(const GeoIPDomain& dom, const DNSName& search, const QType& qtype, const DNSName& qdomain, const Netmask& addr, GeoIPNetmask& gl);
   void setupNetmasks(const YAML::Node& domain, GeoIPDomain& dom);
-  bool loadDomain(const YAML::Node& domain, domainid_t domainID, GeoIPDomain& dom);
+  bool loadDomain(const std::string& origin, const YAML::Node& domain, domainid_t domainID, GeoIPDomain& dom);
   void loadDomainsFromDirectory(const std::string& dir, vector<GeoIPDomain>& domains);
   vector<DNSResourceRecord> d_result;
   vector<GeoIPInterface> d_files;

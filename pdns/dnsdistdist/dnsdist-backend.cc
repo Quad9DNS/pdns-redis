@@ -250,8 +250,8 @@ void DownstreamState::stop()
 
 void DownstreamState::hash()
 {
-  vinfolog("Computing hashes for id=%s and weight=%d", *d_config.id, d_config.d_weight);
   const auto hashPerturbation = dnsdist::configuration::getImmutableConfiguration().d_hashPerturbation;
+  vinfolog("Computing hashes for id=%s and weight=%d, hash_perturbation=%d", *d_config.id, d_config.d_weight, hashPerturbation);
   auto w = d_config.d_weight;
   auto idStr = boost::str(boost::format("%s") % *d_config.id);
   auto lockedHashes = hashes.write_lock();
@@ -296,7 +296,7 @@ DownstreamState::DownstreamState(DownstreamState::Config&& config, std::shared_p
   threadStarted.clear();
 
   if (d_config.d_qpsLimit > 0) {
-    qps = QPSLimiter(d_config.d_qpsLimit, d_config.d_qpsLimit);
+    d_qpsLimiter = QPSLimiter(d_config.d_qpsLimit, d_config.d_qpsLimit);
   }
 
   if (d_config.id) {
@@ -1008,6 +1008,11 @@ bool DownstreamState::parseAvailabilityConfigFromStr(DownstreamState::Config& co
     return true;
   }
   return false;
+}
+
+unsigned int DownstreamState::getQPSLimit() const
+{
+  return d_qpsLimiter ? d_qpsLimiter->getRate() : 0U;
 }
 
 size_t ServerPool::countServers(bool upOnly)

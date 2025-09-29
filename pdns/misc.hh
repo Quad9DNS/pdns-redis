@@ -38,6 +38,7 @@
 #include <syslog.h>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <cctype>
 #include <utility>
 #include <vector>
@@ -106,10 +107,11 @@ void stripLine(string &line);
 std::optional<string> getHostname();
 std::string getCarbonHostName();
 string urlEncode(const string &text);
-int waitForData(int fileDesc, int seconds, int useconds = 0);
-int waitFor2Data(int fd1, int fd2, int seconds, int useconds, int* fd);
-int waitForMultiData(const set<int>& fds, const int seconds, const int useconds, int* fd);
-int waitForRWData(int fileDesc, bool waitForRead, int seconds, int useconds, bool* error = nullptr, bool* disconnected = nullptr);
+int waitForData(int fileDesc, int seconds, int mseconds = 0);
+int waitForData(int fileDesc, struct timeval timeout);
+int waitForMultiData(const set<int>& fds, const int seconds, const int mseconds, int* fd);
+int waitForRWData(int fileDesc, bool waitForRead, int seconds, int mseconds, bool* error = nullptr, bool* disconnected = nullptr);
+int waitForRWData(int fileDesc, bool waitForRead, struct timeval timeout, bool* error = nullptr, bool* disconnected = nullptr);
 bool getTSIGHashEnum(const DNSName& algoName, TSIGHashEnum& algoEnum);
 DNSName getTSIGAlgoName(TSIGHashEnum& algoEnum);
 
@@ -203,8 +205,6 @@ inline string stringerror(int err = errno)
 {
   return pdns::getMessageFromErrno(err);
 }
-
-string bitFlip(const string &str);
 
 void dropPrivs(int uid, int gid);
 void cleanSlashes(string &str);
@@ -804,7 +804,7 @@ std::vector<ComboAddress> getResolvers(const std::string& resolvConfPath);
 
 DNSName reverseNameFromIP(const ComboAddress& ip);
 
-size_t parseRFC1035CharString(const std::string &in, std::string &val); // from ragel
+size_t parseRFC1035CharString(std::string_view in, std::string &val); // from ragel
 size_t parseSVCBValueListFromParsedRFC1035CharString(const std::string &in, vector<std::string> &val); // from ragel
 size_t parseSVCBValueList(const std::string &in, vector<std::string> &val);
 
@@ -896,3 +896,6 @@ using UniqueFilePtr = std::unique_ptr<FILE, FilePtrDeleter>;
 
 UniqueFilePtr openFileForWriting(const std::string& filePath, mode_t permissions, bool mustNotExist = true, bool appendIfExists = false);
 }
+
+using timebuf_t = std::array<char, 64>;
+const char* timestamp(time_t arg, timebuf_t& buf);

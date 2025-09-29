@@ -1851,6 +1851,87 @@ size_t dnsdist_ffi_dnspacket_get_name_at_offset_raw(const char* packet, size_t p
   return 0;
 }
 
+bool dnsdist_ffi_dnspacket_parse_a_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* addr, size_t* addrSize)
+{
+  if (raw == nullptr || packet == nullptr || addr == nullptr || addrSize == nullptr || idx >= packet->overlay.d_records.size()) {
+    return false;
+  }
+
+  const auto& record = packet->overlay.d_records.at(idx);
+  if (record.d_type != QType::A || record.d_contentLength != 4) {
+    return false;
+  }
+
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): this is a C API
+  memcpy(addr, &raw[record.d_contentOffset], 4);
+  *addrSize = record.d_contentLength;
+
+  return true;
+}
+
+bool dnsdist_ffi_dnspacket_parse_aaaa_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* addr, size_t* addrSize)
+{
+  if (raw == nullptr || packet == nullptr || addr == nullptr || addrSize == nullptr || idx >= packet->overlay.d_records.size()) {
+    return false;
+  }
+
+  const auto& record = packet->overlay.d_records.at(idx);
+  if (record.d_type != QType::AAAA || record.d_contentLength != 16) {
+    return false;
+  }
+
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): this is a C API
+  memcpy(addr, &raw[record.d_contentOffset], 16);
+  *addrSize = record.d_contentLength;
+
+  return true;
+}
+
+bool dnsdist_ffi_dnspacket_parse_address_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* addr, size_t* addrSize)
+{
+  if (raw == nullptr || packet == nullptr || addr == nullptr || addrSize == nullptr || idx >= packet->overlay.d_records.size()) {
+    return false;
+  }
+
+  const auto& record = packet->overlay.d_records.at(idx);
+  if (record.d_type == QType::A && record.d_contentLength == 4) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): this is a C API
+    memcpy(addr, &raw[record.d_contentOffset], 4);
+    *addrSize = record.d_contentLength;
+
+    return true;
+  }
+
+  if (record.d_type == QType::AAAA && record.d_contentLength == 16) {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic): this is a C API
+    memcpy(addr, &raw[record.d_contentOffset], 16);
+    *addrSize = record.d_contentLength;
+
+    return true;
+  }
+
+  return false;
+}
+
+bool dnsdist_ffi_dnspacket_parse_cname_record(const char* raw, const dnsdist_ffi_dnspacket_t* packet, size_t idx, char* name, size_t* nameSize)
+{
+  if (raw == nullptr || packet == nullptr || name == nullptr || nameSize == nullptr || idx >= packet->overlay.d_records.size()) {
+    return false;
+  }
+
+  const auto& record = packet->overlay.d_records.at(idx);
+  if (record.d_type != QType::CNAME) {
+    return false;
+  }
+
+  DNSName parsed(raw, record.d_contentOffset + record.d_contentLength, record.d_contentOffset, true);
+  const auto& storage = parsed.getStorage();
+  memcpy(name, storage.data(), storage.size());
+  *nameSize = storage.size();
+
+  return true;
+}
+
 void dnsdist_ffi_dnspacket_free(dnsdist_ffi_dnspacket_t* packet)
 {
   if (packet != nullptr) {
@@ -2289,7 +2370,7 @@ void dnsdist_ffi_dnsquestion_meta_begin_key([[maybe_unused]] dnsdist_ffi_dnsques
     return;
   }
 
-  dnsQuestion->pbfWriter = protozero::pbf_writer{dnsQuestion->dq->d_rawProtobufContent};
+  dnsQuestion->pbfWriter = protozero::pbf_writer{dnsQuestion->dq->ids.d_rawProtobufContent};
   dnsQuestion->pbfMetaWriter = protozero::pbf_writer{dnsQuestion->pbfWriter, static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::Field::meta)};
   dnsQuestion->pbfMetaWriter.add_string(static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::MetaField::key), protozero::data_view(key, keyLen));
   dnsQuestion->pbfMetaValueWriter = protozero::pbf_writer {dnsQuestion->pbfMetaWriter, static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::MetaField::value)};
@@ -2334,6 +2415,7 @@ void dnsdist_ffi_dnsquestion_meta_end_key([[maybe_unused]] dnsdist_ffi_dnsquesti
   if (dnsQuestion == nullptr) {
     return;
   }
+
   if (!dnsQuestion->pbfWriter.valid()) {
     vinfolog("Error in dnsdist_ffi_dnsquestion_meta_end_key: trying to end a key that has not been started");
     return;
@@ -2347,6 +2429,81 @@ void dnsdist_ffi_dnsquestion_meta_end_key([[maybe_unused]] dnsdist_ffi_dnsquesti
   }
   catch (const std::exception& exp) {
     vinfolog("Error in dnsdist_ffi_dnsquestion_meta_end_key: %s", exp.what());
+  }
+#endif /* DISABLE_PROTOBUF */
+}
+
+void dnsdist_ffi_dnsresponse_meta_begin_key([[maybe_unused]] dnsdist_ffi_dnsresponse_t* dnsResponse, [[maybe_unused]] const char* key, [[maybe_unused]] size_t keyLen)
+{
+#if !defined(DISABLE_PROTOBUF)
+  if (dnsResponse == nullptr || key == nullptr || keyLen == 0) {
+    return;
+  }
+
+  if (dnsResponse->pbfWriter.valid()) {
+    vinfolog("Error in dnsdist_ffi_dnsresponse_meta_begin_key: the previous key has not been ended");
+    return;
+  }
+
+  dnsResponse->pbfWriter = protozero::pbf_writer{dnsResponse->dr->ids.d_rawProtobufContent};
+  dnsResponse->pbfMetaWriter = protozero::pbf_writer{dnsResponse->pbfWriter, static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::Field::meta)};
+  dnsResponse->pbfMetaWriter.add_string(static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::MetaField::key), protozero::data_view(key, keyLen));
+  dnsResponse->pbfMetaValueWriter = protozero::pbf_writer {dnsResponse->pbfMetaWriter, static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::MetaField::value)};
+#endif /* DISABLE_PROTOBUF */
+}
+
+void dnsdist_ffi_dnsresponse_meta_add_str_value_to_key([[maybe_unused]] dnsdist_ffi_dnsresponse_t* dnsResponse, [[maybe_unused]] const char* value, [[maybe_unused]] size_t valueLen)
+{
+#if !defined(DISABLE_PROTOBUF)
+  if (dnsResponse == nullptr || value == nullptr || valueLen == 0) {
+    return;
+  }
+
+  if (!dnsResponse->pbfMetaValueWriter.valid()) {
+    vinfolog("Error in dnsdist_ffi_dnsresponse_meta_add_str_value_to_key: trying to add a value without starting a key");
+    return;
+  }
+
+  dnsResponse->pbfMetaValueWriter.add_string(static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::MetaValueField::stringVal), protozero::data_view(value, valueLen));
+#endif /* DISABLE_PROTOBUF */
+}
+
+void dnsdist_ffi_dnsresponse_meta_add_int64_value_to_key([[maybe_unused]] dnsdist_ffi_dnsresponse_t* dnsResponse, [[maybe_unused]] int64_t value)
+{
+#if !defined(DISABLE_PROTOBUF)
+  if (dnsResponse == nullptr) {
+    return;
+  }
+
+  if (!dnsResponse->pbfMetaValueWriter.valid()) {
+    vinfolog("Error in dnsdist_ffi_dnsresponse_meta_add_int64_value_to_key: trying to add a value without starting a key");
+    return;
+  }
+
+  dnsResponse->pbfMetaValueWriter.add_uint64(static_cast<protozero::pbf_tag_type>(pdns::ProtoZero::Message::MetaValueField::intVal), value);
+#endif /* DISABLE_PROTOBUF */
+}
+
+void dnsdist_ffi_dnsresponse_meta_end_key([[maybe_unused]] dnsdist_ffi_dnsresponse_t* dnsResponse)
+{
+#if !defined(DISABLE_PROTOBUF)
+  if (dnsResponse == nullptr) {
+    return;
+  }
+
+  if (!dnsResponse->pbfWriter.valid()) {
+    vinfolog("Error in dnsdist_ffi_dnsresponse_meta_end_key: trying to end a key that has not been started");
+    return;
+  }
+
+  try {
+    /* reset the pbf writer so that the sizes are properly updated */
+    dnsResponse->pbfMetaValueWriter.commit();
+    dnsResponse->pbfMetaWriter.commit();
+    dnsResponse->pbfWriter = protozero::pbf_writer();
+  }
+  catch (const std::exception& exp) {
+    vinfolog("Error in dnsdist_ffi_dnsresponse_meta_end_key: %s", exp.what());
   }
 #endif /* DISABLE_PROTOBUF */
 }

@@ -174,6 +174,8 @@ public:
   virtual void APILookup(const QType& qtype, const DNSName& qdomain, domainid_t zoneId, bool include_disabled = false);
   virtual bool get(DNSResourceRecord&) = 0; //!< retrieves one DNSResource record, returns false if no more were available
   virtual bool get(DNSZoneRecord& zoneRecord);
+  //! Close state created by lookup(...).
+  virtual void lookupEnd();
 
   //! Initiates a list of the specified domain
   /** Once initiated, DNSResourceRecord objects can be retrieved using get(). Should return false
@@ -516,6 +518,22 @@ public:
   }
 
   const string& getPrefix() { return d_prefix; };
+
+  // The following routine allows callers to retrieve invalid records from
+  // the backend, which would not be returned by get(). This is used by
+  // pdnsutil for diagnostic purposes.
+  // The default implementation simply wraps get() and pretends there are
+  // no invalid or corrupted records in the backend storage.
+
+  virtual bool get_unsafe(DNSResourceRecord& rec, std::vector<std::pair<std::string, std::string>>& invalid)
+  {
+    invalid.clear();
+    return get(rec);
+  }
+
+  virtual void flush()
+  {
+  }
 
 protected:
   bool mustDo(const string& key);

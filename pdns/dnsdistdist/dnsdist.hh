@@ -176,9 +176,6 @@ public:
   InternalQueryState& ids;
   std::unique_ptr<Netmask> ecs{nullptr};
   std::string sni; /* Server Name Indication, if any (DoT or DoH) */
-#if !defined(DISABLE_PROTOBUF)
-  std::string d_rawProtobufContent; /* protobuf-encoded content to add to protobuf messages */
-#endif /* DISABLE_PROTOBUF */
   mutable std::unique_ptr<EDNSOptionViewMap> ednsOptions; /* this needs to be mutable because it is parsed just in time, when DNSQuestion is read-only */
   std::shared_ptr<IncomingTCPConnectionState> d_incomingTCPState{nullptr};
   std::unique_ptr<std::vector<ProxyProtocolValue>> proxyProtocolValues{nullptr};
@@ -208,10 +205,6 @@ using pdns::stat_t;
 class BasicQPSLimiter
 {
 public:
-  BasicQPSLimiter()
-  {
-  }
-
   BasicQPSLimiter(unsigned int burst) :
     d_tokens(burst)
   {
@@ -270,11 +263,6 @@ protected:
 class QPSLimiter : public BasicQPSLimiter
 {
 public:
-  QPSLimiter() :
-    BasicQPSLimiter()
-  {
-  }
-
   QPSLimiter(unsigned int rate, unsigned int burst) :
     BasicQPSLimiter(burst), d_rate(rate), d_burst(burst), d_passthrough(false)
   {
@@ -722,7 +710,7 @@ public:
   std::shared_ptr<TLSCtx> d_tlsCtx{nullptr};
   std::vector<int> sockets;
   StopWatch sw;
-  QPSLimiter qps;
+  std::optional<QPSLimiter> d_qpsLimiter;
 #ifdef HAVE_XSK
   std::vector<std::shared_ptr<XskWorker>> d_xskInfos;
   std::vector<std::shared_ptr<XskSocket>> d_xskSockets;
@@ -874,7 +862,9 @@ public:
   void incQueriesCount()
   {
     ++queries;
-    qps.addHit();
+    if (d_qpsLimiter) {
+      d_qpsLimiter->addHit();
+    }
   }
 
   void incCurrentConnectionsCount();
@@ -932,6 +922,8 @@ public:
     }
     return latencyUsec;
   }
+
+  unsigned int getQPSLimit() const;
 };
 
 void responderThread(std::shared_ptr<DownstreamState> dss);

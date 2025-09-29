@@ -716,6 +716,30 @@ public:
   std::shared_ptr<SVCBBaseRecordContent> clone() const override;
 };
 
+class DRIPBaseRecordContent : public DNSKEYRecordContent
+{
+public:
+  [[nodiscard]] size_t sizeEstimate() const override
+  {
+    return sizeof(*this) + d_data.size();
+  }
+  virtual std::shared_ptr<DRIPBaseRecordContent> clone() const = 0;
+protected:
+  string d_data;
+};
+
+class HHITRecordContent : public DRIPBaseRecordContent {
+public:
+  includeboilerplate(HHIT);
+  std::shared_ptr<DRIPBaseRecordContent> clone() const override;
+};
+
+class BRIDRecordContent : public DRIPBaseRecordContent {
+public:
+  includeboilerplate(BRID);
+  std::shared_ptr<DRIPBaseRecordContent> clone() const override;
+};
+
 class RRSIGRecordContent : public DNSRecordContent
 {
 public:
@@ -1264,7 +1288,7 @@ RNAME##RecordContent::RNAME##RecordContent(const string& zoneData)              
     xfrPacket(rtr);                                                                                \
   }                                                                                                \
   catch(RecordTextException& rte) {                                                                \
-    throw MOADNSException("Parsing record content (try 'pdnsutil check-zone'): "+string(rte.what()));  \
+    throw MOADNSException("Parsing record content (try 'pdnsutil zone check'): "+string(rte.what()));  \
   }                                                                                                \
 }                                                                                                  \
                                                                                                    \
@@ -1301,6 +1325,10 @@ struct EDNSOpts
   uint8_t d_extRCode, d_version;
 
   [[nodiscard]] vector<pair<uint16_t, string>>::const_iterator getFirstOption(uint16_t optionCode) const;
+  [[nodiscard]] uint16_t getCombinedERCode(uint8_t rcode) const
+  {
+    return (static_cast<uint16_t>(d_extRCode) << 4) | rcode;
+  }
 };
 //! Convenience function that fills out EDNS0 options, and returns true if there are any
 
@@ -1308,4 +1336,4 @@ class MOADNSParser;
 bool getEDNSOpts(const MOADNSParser& mdp, EDNSOpts* eo);
 void reportAllTypes();
 ComboAddress getAddr(const DNSRecord& dr, uint16_t defport=0);
-void checkHostnameCorrectness(const DNSResourceRecord& rr);
+void checkHostnameCorrectness(const DNSResourceRecord& rr, bool allowUnderscore = false);

@@ -1998,8 +1998,8 @@ packet_cache:
       description: "The maximum size, in bytes, of a DNS packet that can be inserted into the packet cache"
     - name: "options_to_skip"
       type: "Vec<String>"
-      default: ""
-      description: "Extra list of EDNS option codes to skip when hashing the packet (if ``cookie_hashing`` above is false, EDNS cookie option number will be added to this list internally)"
+      default: "10, 12"
+      description: "Extra list of EDNS option codes to skip when hashing the packet (if ``cookie_hashing`` above is true, EDNS cookie option number (10) will be removed from this list internally)"
     - name: "payload_ranks"
       type: "Vec<u16>"
       default: "[]"
@@ -2161,7 +2161,7 @@ load_balancing_policies:
       lua-name: "setWHashedPerturbation"
       internal-field-name: "d_hashPerturbation"
       runtime-configurable: false
-      description: "Set the hash perturbation value to be used in the ``whashed`` policy instead of a random one, allowing to have consistent ``whashed`` results on different instances"
+      description: "Set the hash perturbation value to be used in the ``chashed`` and ``whashed`` policies instead of a random one, allowing to have consistent ``chashed`` and ``whashed`` results on different instances"
 
 query_rule:
   description: "A rule that can applied on queries"

@@ -738,6 +738,14 @@ BOOST_AUTO_TEST_CASE(test_compare_canonical) {
   BOOST_CHECK(vec==right);
 }
 
+BOOST_AUTO_TEST_CASE(test_compare_pretty) {
+  BOOST_CHECK(DNSName("99.2.1.10.in-addr.arpa").canonCompare(DNSName("101.2.1.10.in-addr.arpa"), true));
+  BOOST_CHECK(!DNSName("101.2.1.10.in-addr.arpa").canonCompare(DNSName("99.2.1.10.in-addr.arpa"), true));
+  BOOST_CHECK(DNSName("ns12.example.com").canonCompare(DNSName("ns8.example.com"), true));
+  BOOST_CHECK(!DNSName("ns8.example.com").canonCompare(DNSName("ns12.example.com"), true));
+  BOOST_CHECK(DNSName("135.org").canonCompare(DNSName("2x.org"), true));
+  BOOST_CHECK(!DNSName("2x.org").canonCompare(DNSName("135.org"), true));
+}
 
 BOOST_AUTO_TEST_CASE(test_empty_label) { // empty label
 
@@ -1030,6 +1038,35 @@ BOOST_AUTO_TEST_CASE(test_getcommonlabels) {
   const DNSName name5;
   BOOST_CHECK_EQUAL(name1.getCommonLabels(name5), DNSName());
   BOOST_CHECK_EQUAL(name5.getCommonLabels(name1), DNSName());
+}
+
+BOOST_AUTO_TEST_CASE(test_raw_data_comparison) {
+  const DNSName aroot("a.root-servers.net");
+  PacketBuffer query;
+  GenericDNSPacketWriter<PacketBuffer> packetWriter(query, aroot, QType::A, QClass::IN, 0);
+
+  {
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const std::string_view raw(reinterpret_cast<const char*>(query.data()) + sizeof(dnsheader), query.size() - sizeof(dnsheader));
+    BOOST_CHECK(aroot.matchesUncompressedName(raw));
+
+    const DNSName differentCase("A.RooT-Servers.NET");
+    BOOST_CHECK(differentCase.matchesUncompressedName(raw));
+
+    const DNSName broot("b.root-servers.net");
+    BOOST_CHECK(!(broot.matchesUncompressedName(raw)));
+
+    /* last character differs */
+    const DNSName notaroot("a.root-servers.nes");
+    BOOST_CHECK(!(notaroot.matchesUncompressedName(raw)));
+  }
+
+  {
+    /* too short */
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const std::string_view raw(reinterpret_cast<const char*>(query.data() + sizeof(dnsheader)), aroot.wirelength() - 1);
+    BOOST_CHECK(!(aroot.matchesUncompressedName(raw)));
+  }
 }
 
 #if defined(PDNS_AUTH)

@@ -115,6 +115,8 @@ public:
   bool isPartOf(const DNSName& rhs) const;   //!< Are we part of the rhs name? Note that name.isPartOf(name).
   inline bool operator==(const DNSName& rhs) const; //!< DNS-native comparison (case insensitive) - empty compares to empty
   bool operator!=(const DNSName& other) const { return !(*this == other); }
+  // !< DNS-native (case insensitive) comparison against raw data in (uncompressed) wire format. The view has to start with the DNS name, but does not have to contain only a DNS name. Roughly, passing a view of a DNS packet starting just after the DNS header is OK, everything else is not because any names present later in the packet might be compressed.
+  bool matchesUncompressedName(const std::string_view& wire_uncompressed) const;
 
   std::string toString(const std::string& separator=".", const bool trailing=true) const;              //!< Our human-friendly, escaped, representation
   void toString(std::string& output, const std::string& separator=".", const bool trailing=true) const;
@@ -147,7 +149,7 @@ public:
   DNSName getCommonLabels(const DNSName& other) const; //!< Return the list of common labels from the top, for example 'c.d' for 'a.b.c.d' and 'x.y.c.d'
   DNSName labelReverse() const;
   bool isWildcard() const;
-  bool isHostname() const;
+  bool isHostname(bool allowUnderscore = false) const;
   unsigned int countLabels() const;
   size_t wirelength() const; //!< Number of total bytes in the name
   bool empty() const { return d_storage.empty(); }
@@ -190,8 +192,8 @@ public:
   }
 
   int slowCanonCompare_three_way(const DNSName& rhs) const;
-  int canonCompare_three_way(const DNSName& rhs) const;
-  inline bool canonCompare(const DNSName& rhs) const { return canonCompare_three_way(rhs) < 0; }
+  int canonCompare_three_way(const DNSName& rhs, bool pretty = false) const;
+  inline bool canonCompare(const DNSName& rhs, bool pretty = false) const { return canonCompare_three_way(rhs, pretty) < 0; }
 
   typedef boost::container::string string_t;
 

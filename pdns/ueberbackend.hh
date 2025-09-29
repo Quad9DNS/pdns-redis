@@ -67,6 +67,7 @@ public:
   {
   public:
     bool get(DNSZoneRecord& record);
+    void lookupEnd() const;
     handle();
     ~handle();
 
@@ -147,6 +148,8 @@ public:
   bool hasCreatedLocalFiles();
 
   unsigned int getCapabilities();
+
+  void flush();
 
 private:
   handle d_handle;

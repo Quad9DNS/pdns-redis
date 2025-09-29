@@ -505,7 +505,7 @@ int DNSName::slowCanonCompare_three_way(const DNSName& rhs) const
   return 0; // eq
 }
 
-int DNSName::canonCompare_three_way(const DNSName& rhs) const
+int DNSName::canonCompare_three_way(const DNSName& rhs, bool pretty) const
 {
   //      01234567890abcd
   // us:  1a3www4ds9a2nl
@@ -544,14 +544,42 @@ int DNSName::canonCompare_three_way(const DNSName& rhs) const
     rhscount--;
 
     // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic)
-    int res = pdns_ilexicographical_compare_three_way(
-      std::string_view(
-        d_storage.c_str() + ourpos.at(ourcount) + 1,
-        *(d_storage.c_str() + ourpos.at(ourcount))),
-      std::string_view(
-        rhs.d_storage.c_str() + rhspos.at(rhscount) + 1,
-        *(rhs.d_storage.c_str() + rhspos.at(rhscount))));
+    const uint8_t ourlen = *(d_storage.c_str() + ourpos.at(ourcount));
+    const uint8_t rhslen = *(rhs.d_storage.c_str() + rhspos.at(rhscount));
+    std::string_view ourstr(d_storage.c_str() + ourpos.at(ourcount) + 1, ourlen);
+    std::string_view rhsstr(rhs.d_storage.c_str() + rhspos.at(rhscount) + 1, rhslen);
     // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+
+    // If pretty ordering requested, sort numerical values, well,
+    // numerically (i.e. 999.example.com < 1000.example.com).
+    // Do not use for anything but human-intended output, as this breaks
+    // the DNSSEC order.
+    if (pretty) {
+      // If both names are numerical (made of digits), then the longest one
+      // always compares higher.
+      if (ourlen != rhslen) {
+        bool isNumerical{true};
+        for (const auto chr : ourstr) {
+          if (std::isdigit(static_cast<unsigned char>(chr)) == 0) {
+            isNumerical = false;
+            break;
+          }
+        }
+        if (isNumerical) {
+          for (const auto chr : rhsstr) {
+            if (std::isdigit(static_cast<unsigned char>(chr)) == 0) {
+              isNumerical = false;
+              break;
+            }
+          }
+        }
+        if (isNumerical) {
+          return ourlen < rhslen ? -1 : 1;
+        }
+      }
+    }
+
+    int res = pdns_ilexicographical_compare_three_way(ourstr, rhsstr);
     if (res != 0) {
       return res;
     }
@@ -610,9 +638,17 @@ bool DNSName::isWildcard() const
 /*
  * Returns true if the DNSName is a valid RFC 1123 hostname, this function uses
  * a regex on the string, so it is probably best not used when speed is essential.
+ *
+ * If allowUnderscore is set, underscore characters (`_') are allowed anywhere
+ * a letter or a digit would have been. In particular, leading underscores are
+ * allowed.
  */
-bool DNSName::isHostname() const
+bool DNSName::isHostname(bool allowUnderscore) const
 {
+  if (allowUnderscore) {
+    static Regex hostNameRegexWithUnderscore = Regex("^(([A-Za-z0-9_]([A-Za-z0-9-_]*[A-Za-z0-9_])?)\\.)+$");
+    return hostNameRegexWithUnderscore.match(this->toString());
+  }
   static Regex hostNameRegex = Regex("^(([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)\\.)+$");
   return hostNameRegex.match(this->toString());
 }
@@ -821,6 +857,15 @@ bool DNSName::RawLabelsVisitor::pop_back()
 bool DNSName::RawLabelsVisitor::empty() const
 {
   return d_position == 0;
+}
+
+bool DNSName::matchesUncompressedName(const std::string_view& wire_uncompressed) const
+{
+  if (wire_uncompressed.empty() != empty() || wire_uncompressed.size() < d_storage.size()) {
+    return false;
+  }
+
+  return pdns_ilexicographical_compare_three_way(std::string_view(wire_uncompressed.data(), d_storage.size()), d_storage) == 0;
 }
 
 #if defined(PDNS_AUTH) // [

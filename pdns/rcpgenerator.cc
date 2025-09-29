@@ -47,9 +47,11 @@ RecordTextReader::RecordTextReader(string str, ZoneName zone) :
 
 void RecordTextReader::xfr48BitInt(uint64_t &val)
 {
+  auto oldpos = d_pos;
   xfr64BitInt(val);
-  if (val > 281474976710655LL)
-    throw RecordTextException("Overflow reading 48 bit integer from record content"); // fixme improve
+  if (val >= (1ULL << 48)) {
+    throw RecordTextException("Numerical value " + d_string.substr(oldpos, d_pos - oldpos) + " at position " + std::to_string(oldpos) + " is too large for a 48-bit integer");
+  }
 }
 
 void RecordTextReader::xfrNodeOrLocatorID(NodeOrLocatorID& val) {
@@ -234,20 +236,24 @@ bool RecordTextReader::eof()
 
 void RecordTextReader::xfr16BitInt(uint16_t &val)
 {
-  uint32_t tmp;
+  auto oldpos = d_pos;
+  uint32_t tmp{0};
   xfr32BitInt(tmp);
   val=tmp;
-  if(val!=tmp)
-    throw RecordTextException("Overflow reading 16 bit integer from record content"); // fixme improve
+  if(val!=tmp) {
+    throw RecordTextException("Numerical value " + d_string.substr(oldpos, d_pos - oldpos) + " at position " + std::to_string(oldpos) + " is too large for a 16-bit integer");
+  }
 }
 
 void RecordTextReader::xfr8BitInt(uint8_t &val)
 {
-  uint32_t tmp;
+  auto oldpos = d_pos;
+  uint32_t tmp{0};
   xfr32BitInt(tmp);
   val=tmp;
-  if(val!=tmp)
-    throw RecordTextException("Overflow reading 8 bit integer from record content"); // fixme improve
+  if(val!=tmp) {
+    throw RecordTextException("Numerical value " + d_string.substr(oldpos, d_pos - oldpos) + " at position " + std::to_string(oldpos) + " is too large for a 8-bit integer");
+  }
 }
 
 // this code should leave all the escapes around
@@ -294,12 +300,15 @@ static bool isbase64(char c, bool acceptspace)
   return false;
 }
 
-void RecordTextReader::xfrBlobNoSpaces(string& val, int len) {
+void RecordTextReader::xfrBlobNoSpaces(string& val, int len)
+{
   skipSpaces();
-  int pos=(int)d_pos;
+  auto pos = d_pos;
   const char* strptr=d_string.c_str();
-  while(d_pos < d_end && isbase64(strptr[d_pos], false))
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  while(d_pos < d_end && isbase64(strptr[d_pos], false)) {
     d_pos++;
+  }
 
   string tmp;
   tmp.assign(d_string.c_str()+pos, d_string.c_str() + d_pos);
@@ -314,10 +323,12 @@ void RecordTextReader::xfrBlobNoSpaces(string& val, int len) {
 void RecordTextReader::xfrBlob(string& val, int)
 {
   skipSpaces();
-  int pos=(int)d_pos;
+  auto pos = d_pos;
   const char* strptr=d_string.c_str();
-  while(d_pos < d_end && isbase64(strptr[d_pos], true))
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+  while(d_pos < d_end && isbase64(strptr[d_pos], true)) {
     d_pos++;
+  }
 
   string tmp;
   tmp.assign(d_string.c_str()+pos, d_string.c_str() + d_pos);
@@ -344,7 +355,7 @@ void RecordTextReader::xfrSvcParamKeyVals(set<SvcParam>& val) // NOLINT(readabil
       return;
 
     // Find the SvcParamKey
-    size_t pos = d_pos;
+    auto pos = d_pos;
     while (d_pos != d_end) {
       if (d_string.at(d_pos) == '=' || d_string.at(d_pos) == ' ') {
         break;
@@ -552,48 +563,52 @@ static inline uint8_t hextodec(uint8_t val)
 }
 
 
-static void HEXDecode(const char* begin, const char* end, string& out)
+static void HEXDecode(std::string_view chunk, string& out)
 {
-  if(end - begin == 1 && *begin=='-') {
-    out.clear();
+  out.clear();
+  if (chunk.length() == 1 && chunk[0] == '-') {
     return;
   }
-  out.clear();
-  out.reserve((end-begin)/2);
-  uint8_t mode=0, val=0;
-  for(; begin != end; ++begin) {
-    if(!isalnum(*begin))
+  out.reserve(chunk.length() / 2);
+  bool lowdigit{false};
+  uint8_t val{0};
+  for (auto chr : chunk) {
+    if(isalnum(chr) == 0) {
       continue;
-    if(mode==0) {
-      val = 16*hextodec(*begin);
-      mode=1;
+    }
+    if (!lowdigit) {
+      val = 16*hextodec(chr);
+      lowdigit = true;
     } else {
-      val += hextodec(*begin);
+      val += hextodec(chr);
       out.append(1, (char) val);
-      mode = 0;
+      lowdigit = false;
       val = 0;
     }
   }
-  if(mode)
-    throw RecordTextException("Hexadecimal blob with odd number of characters");
+  if (lowdigit) {
+    throw RecordTextException("Hexadecimal blob '" + std::string(chunk) + "' contains an odd number of hex digits");
+  }
 }
 
 void RecordTextReader::xfrHexBlob(string& val, bool keepReading)
 {
   skipSpaces();
-  int pos=(int)d_pos;
-  while(d_pos < d_end && (keepReading || !dns_isspace(d_string[d_pos])))
+  auto pos = d_pos;
+  while(d_pos < d_end && (keepReading || !dns_isspace(d_string[d_pos]))) {
     d_pos++;
+  }
 
-  HEXDecode(d_string.c_str()+pos, d_string.c_str() + d_pos, val);
+  HEXDecode(std::string_view(d_string).substr(pos, d_pos - pos), val);
 }
 
 void RecordTextReader::xfrBase32HexBlob(string& val)
 {
   skipSpaces();
-  int pos=(int)d_pos;
-  while(d_pos < d_end && !dns_isspace(d_string[d_pos]))
+  auto pos = d_pos;
+  while(d_pos < d_end && !dns_isspace(d_string[d_pos])) {
     d_pos++;
+  }
 
   val=fromBase32Hex(string(d_string.c_str()+pos, d_pos-pos));
 }
@@ -613,37 +628,66 @@ void RecordTextReader::xfrText(string& val, bool multi, bool /* lenField */)
   val.clear();
   val.reserve(d_end - d_pos);
 
-  while(d_pos != d_end) {
-    if(!val.empty())
+  while (d_pos != d_end) {
+    if (!val.empty()) {
       val.append(1, ' ');
+    }
 
     skipSpaces();
-    if(d_string[d_pos]!='"') { // special case 'plenus' - without quotes
-      string::size_type pos = d_pos;
-      while(pos != d_end && isalnum(d_string[pos]))
-        pos++;
-      if(pos == d_end) {
-        val.append(1, '"');
-        val.append(d_string.c_str() + d_pos, d_end - d_pos);
-        val.append(1, '"');
-        d_pos = d_end;
+    char delimiter{'"'};
+    bool quoted = d_string[d_pos] == '"';
+    // If the word is quoted, process up to the next quote; otherwise,
+    // process up to the next whitespace (but output it in quotes).
+    val.append(1, '"');
+    if (quoted) {
+      ++d_pos;
+    }
+    else {
+      // RFC1035: ``a contiguous set of characters without interior spaces''
+      delimiter = ' ';
+    }
+    while (d_pos != d_end && d_string[d_pos] != delimiter) {
+      if (d_string[d_pos] == '\\' && d_pos + 1 != d_end) {
+        val.append(1, d_string[d_pos++]); // copy escape slash
+        char chr = d_string[d_pos];
+        if (chr >= '0' && chr <= '9') {
+          bool valid{false};
+          // Must be a three-digit character escape sequence
+          if (d_end - d_pos >= 3) {
+            char chr2 = d_string[d_pos + 1];
+            char chr3 = d_string[d_pos + 2];
+            if (chr2 >= '0' && chr2 <= '9' && chr3 >= '0' && chr3 <= '9') {
+              valid = 100 * (chr - '0') + 10 * (chr2 - '0') + chr3 - '0' < 256;
+            }
+          }
+          if (!valid) {
+            throw RecordTextException("Data field in DNS contains an invalid escape at position "+std::to_string(d_pos)+" of '"+d_string+"'");
+          }
+        }
+        // Not advancing d_pos, we'll append the next 1 or 3 characters as
+        // part of the regular case.
+      }
+      if (!quoted && d_string[d_pos] == '"') {
+        // Bind allows a non-quoted text to be immediately followed by a
+        // quoted text, without any whitespace in between, so handle this
+        // as a delimiter.
         break;
       }
-      throw RecordTextException("Data field in DNS should start with quote (\") at position "+std::to_string(d_pos)+" of '"+d_string+"'");
-    }
-    val.append(1, '"');
-    while(++d_pos < d_end && d_string[d_pos]!='"') {
-      if(d_string[d_pos]=='\\' && d_pos+1!=d_end) {
-        val.append(1, d_string[d_pos++]);
-      }
       val.append(1, d_string[d_pos]);
+      ++d_pos;
     }
     val.append(1,'"');
-    if(d_pos == d_end)
-      throw RecordTextException("Data field in DNS should end on a quote (\") in '"+d_string+"'");
-    d_pos++;
-    if(!multi)
+    if (quoted) {
+      // If we reached the end in a quoted section, the closing quote is missing.
+      if (d_pos == d_end) {
+        throw RecordTextException("Data field in DNS should end on a quote (\") in '"+d_string+"'");
+      }
+      // Skip closing quote
+      ++d_pos;
+    }
+    if (!multi) {
       break;
+    }
   }
 }
 
@@ -665,9 +709,10 @@ void RecordTextReader::xfrUnquotedText(string& val, bool /* lenField */)
 void RecordTextReader::xfrType(uint16_t& val)
 {
   skipSpaces();
-  int pos=(int)d_pos;
-  while(d_pos < d_end && !dns_isspace(d_string[d_pos]))
+  auto pos = d_pos;
+  while(d_pos < d_end && !dns_isspace(d_string[d_pos])) {
     d_pos++;
+  }
 
   string tmp;
   tmp.assign(d_string.c_str()+pos, d_string.c_str() + d_pos);
@@ -965,7 +1010,12 @@ void RecordTextWriter::xfrText(const string& val, bool /* multi */, bool /* lenF
   if(!d_string.empty())
     d_string.append(1,' ');
 
-  d_string.append(val);
+  if (val.empty()) {
+    d_string.append(2, '"');
+  }
+  else {
+    d_string.append(val);
+  }
 }
 
 void RecordTextWriter::xfrUnquotedText(const string& val, bool /* lenField */)

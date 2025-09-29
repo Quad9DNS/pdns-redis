@@ -1092,7 +1092,7 @@ static void addServerToJSON(Json::array& servers, int identifier, const std::sha
     {"state", status},
     {"protocol", backend->getProtocol().toPrettyString()},
     {"qps", (double)backend->queryLoad},
-    {"qpsLimit", (double)backend->qps.getRate()},
+    {"qpsLimit", static_cast<double>(backend->getQPSLimit())},
     {"outstanding", (double)backend->outstanding},
     {"reuseds", (double)backend->reuseds},
     {"weight", (double)backend->d_config.d_weight},
@@ -1931,6 +1931,7 @@ void WebserverThread(ComboAddress listeningAddress, Socket sock)
     try {
       ComboAddress remote(listeningAddress);
       int fileDesc = SAccept(sock.getHandle(), remote);
+      dnsdist::configuration::refreshLocalRuntimeConfiguration();
 
       if (!isClientAllowedByACL(remote)) {
         vinfolog("Connection to webserver from client %s is not allowed, closing", remote.toStringWithPort());

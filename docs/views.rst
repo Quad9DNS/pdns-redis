@@ -85,6 +85,10 @@ that view, as their variantless contents.
 Only one variant per zone may appear in a view; setting a new zone variant will
 replace the previous one in the view.
 
+View names are case-sensitive and may be composed of letters, digits, spaces,
+as well as `-` (dash), `.` (dot) and `_` (underscore). They are not allowed to
+start with a dot or a space.
+
 Resolution Algorithm
 --------------------
 
@@ -162,7 +166,11 @@ to create these zones, like you would do for any other "regular" zone::
   pdnsutil zone create example.com..trusted
 
 and then use `zone load`, `zone edit`, or `rrset add` to add contents to these
-zones.
+zones; or you may copy the contents of an existing zone::
+
+  pdnsutil zone copy example.com..internal example.com..trusted
+
+and then use `zone edit` to adjust the contents as needed.
 
 With these settings in place, queries for the `example.com.` zone will be
 performed on the `example.com..internal` zone when originating from the internal

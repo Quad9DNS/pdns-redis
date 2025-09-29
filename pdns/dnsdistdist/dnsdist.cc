@@ -285,12 +285,22 @@ bool responseContentMatches(const PacketBuffer& response, const DNSName& qname, 
     return false;
   }
 
-  uint16_t rqtype{};
-  uint16_t rqclass{};
-  DNSName rqname;
   try {
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    rqname = DNSName(reinterpret_cast<const char*>(response.data()), response.size(), sizeof(dnsheader), false, &rqtype, &rqclass);
+    uint16_t rqtype{};
+    uint16_t rqclass{};
+    if (response.size() < (sizeof(dnsheader) + qname.wirelength() + sizeof(rqtype) + sizeof(rqclass))) {
+      return false;
+    }
+
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-bounds-pointer-arithmetic)
+    const std::string_view packetView(reinterpret_cast<const char*>(response.data() + sizeof(dnsheader)), response.size() - sizeof(dnsheader));
+    if (qname.matchesUncompressedName(packetView)) {
+      size_t pos = sizeof(dnsheader) + qname.wirelength();
+      rqtype = response.at(pos) * 256 + response.at(pos + 1);
+      rqclass = response.at(pos + 2) * 256 + response.at(pos + 3);
+      return rqtype == qtype && rqclass == qclass;
+    }
+    return false;
   }
   catch (const std::exception& e) {
     if (remote && !response.empty() && static_cast<size_t>(response.size()) > sizeof(dnsheader)) {
@@ -302,8 +312,6 @@ bool responseContentMatches(const PacketBuffer& response, const DNSName& qname, 
     }
     return false;
   }
-
-  return rqtype == qtype && rqclass == qclass && rqname == qname;
 }
 
 static void restoreFlags(struct dnsheader* dnsHeader, uint16_t origFlags)
@@ -647,7 +655,7 @@ void handleResponseSent(const DNSName& qname, const QType& qtype, double udiff, 
 
 static void handleResponseTC4UDPClient(DNSQuestion& dnsQuestion, uint16_t udpPayloadSize, PacketBuffer& response)
 {
-  if (udpPayloadSize > 0 && response.size() > udpPayloadSize) {
+  if (udpPayloadSize != 0 && response.size() > udpPayloadSize) {
     vinfolog("Got a response of size %d while the initial UDP payload size was %d, truncating", response.size(), udpPayloadSize);
     truncateTC(dnsQuestion.getMutableData(), dnsQuestion.getMaximumSize(), dnsQuestion.ids.qname.wirelength(), dnsdist::configuration::getCurrentRuntimeConfiguration().d_addEDNSToSelfGeneratedResponses);
     dnsdist::PacketMangling::editDNSHeaderFromPacket(dnsQuestion.getMutableData(), [](dnsheader& header) {
@@ -655,7 +663,7 @@ static void handleResponseTC4UDPClient(DNSQuestion& dnsQuestion, uint16_t udpPay
       return true;
     });
   }
-  else if (dnsQuestion.getHeader()->tc && dnsdist::configuration::getCurrentRuntimeConfiguration().d_truncateTC) {
+  else if (dnsdist::configuration::getCurrentRuntimeConfiguration().d_truncateTC && dnsQuestion.getHeader()->tc) {
     truncateTC(response, dnsQuestion.getMaximumSize(), dnsQuestion.ids.qname.wirelength(), dnsdist::configuration::getCurrentRuntimeConfiguration().d_addEDNSToSelfGeneratedResponses);
   }
 }
@@ -812,6 +820,7 @@ void responderThread(std::shared_ptr<DownstreamState> dss)
             continue;
           }
 
+          dnsdist::configuration::refreshLocalRuntimeConfiguration();
           if (processResponderPacket(dss, response, std::move(*ids)) && ids->isXSK() && ids->cs->xskInfoResponder) {
 #ifdef HAVE_XSK
             auto& xskInfo = ids->cs->xskInfoResponder;
@@ -1899,6 +1908,8 @@ static void processUDPQuery(ClientState& clientState, const struct msghdr* msgh,
     // the buffer might have been invalidated by now (resized)
     const auto dnsHeader = dnsQuestion.getHeader();
     if (result == ProcessQueryResult::SendAnswer) {
+      /* ensure payload size is not exceeded */
+      handleResponseTC4UDPClient(dnsQuestion, udpPayloadSize, query);
 #ifndef DISABLE_RECVMMSG
 #if defined(HAVE_RECVMMSG) && defined(HAVE_SENDMMSG) && defined(MSG_WAITFORONE)
       if (dnsQuestion.ids.delayMsec == 0 && responsesVect != nullptr) {
@@ -1909,8 +1920,6 @@ static void processUDPQuery(ClientState& clientState, const struct msghdr* msgh,
       }
 #endif /* defined(HAVE_RECVMMSG) && defined(HAVE_SENDMMSG) && defined(MSG_WAITFORONE) */
 #endif /* DISABLE_RECVMMSG */
-      /* ensure payload size is not exceeded */
-      handleResponseTC4UDPClient(dnsQuestion, udpPayloadSize, query);
       /* we use dest, always, because we don't want to use the listening address to send a response since it could be 0.0.0.0 */
       sendUDPResponse(clientState.udpFD, query, dnsQuestion.ids.delayMsec, dest, remote);
 
@@ -2148,6 +2157,7 @@ static void MultipleMessagesUDPClientThread(ClientState* clientState)
       }
 
       recvData[msgIdx].packet.resize(got);
+      dnsdist::configuration::refreshLocalRuntimeConfiguration();
       processUDPQuery(*clientState, msgh, remote, recvData[msgIdx].dest, recvData[msgIdx].packet, &outMsgVec, &msgsToSend, &recvData[msgIdx].iov, &recvData[msgIdx].cbuf);
     }
 
@@ -2214,6 +2224,7 @@ static void udpClientThread(std::vector<ClientState*> states)
 
         packet.resize(static_cast<size_t>(got));
 
+        dnsdist::configuration::refreshLocalRuntimeConfiguration();
         processUDPQuery(*param.cs, &msgh, remote, dest, packet, nullptr, nullptr, nullptr, nullptr);
       };
 
@@ -2295,6 +2306,7 @@ static void maintThread()
   for (;;) {
     std::this_thread::sleep_for(std::chrono::seconds(interval));
 
+    dnsdist::configuration::refreshLocalRuntimeConfiguration();
     {
       auto lua = g_lua.lock();
       try {
@@ -2367,6 +2379,7 @@ static void dynBlockMaintenanceThread()
 {
   setThreadName("dnsdist/dynBloc");
 
+  dnsdist::configuration::refreshLocalRuntimeConfiguration();
   DynBlockMaintenance::run();
 }
 #endif
@@ -2377,7 +2390,7 @@ static void secPollThread()
   setThreadName("dnsdist/secpoll");
 
   for (;;) {
-    const auto& runtimeConfig = dnsdist::configuration::getCurrentRuntimeConfiguration();
+    const auto& runtimeConfig = dnsdist::configuration::refreshLocalRuntimeConfiguration();
 
     try {
       dnsdist::secpoll::doSecPoll(runtimeConfig.d_secPollSuffix);
@@ -2424,9 +2437,11 @@ static void healthChecksThread()
     }
 
     std::unique_ptr<FDMultiplexer> mplexer{nullptr};
+    const auto& runtimeConfig = dnsdist::configuration::refreshLocalRuntimeConfiguration();
+
     // this points to the actual shared_ptrs!
     // coverity[auto_causes_copy]
-    const auto servers = dnsdist::configuration::getCurrentRuntimeConfiguration().d_backends;
+    const auto servers = runtimeConfig.d_backends;
     for (const auto& dss : servers) {
       dss->updateStatisticsInfo();
 
@@ -2986,7 +3001,10 @@ static void reportFeatures()
   cout << "snmp ";
 #endif
 #ifdef HAVE_SYSTEMD
-  cout << "systemd";
+  cout << "systemd ";
+#endif
+#ifdef HAVE_YAML_CONFIGURATION
+  cout << "yaml ";
 #endif
   cout << endl;
 // NOLINTBEGIN(cppcoreguidelines-macro-usage)
@@ -3126,11 +3144,12 @@ static void parseParameters(int argc, char** argv, CommandLineParameters& cmdLin
 static void setupPools()
 {
   bool precompute = false;
-  if (dnsdist::configuration::getCurrentRuntimeConfiguration().d_lbPolicy->getName() == "chashed") {
+  const auto& currentConfig = dnsdist::configuration::getCurrentRuntimeConfiguration();
+  if (currentConfig.d_lbPolicy->getName() == "chashed") {
     precompute = true;
   }
   else {
-    for (const auto& entry : dnsdist::configuration::getCurrentRuntimeConfiguration().d_pools) {
+    for (const auto& entry : currentConfig.d_pools) {
       if (entry.second->policy != nullptr && entry.second->policy->getName() == "chashed") {
         precompute = true;
         break;
@@ -3140,7 +3159,7 @@ static void setupPools()
   if (precompute) {
     vinfolog("Pre-computing hashes for consistent hash load-balancing policy");
     // pre compute hashes
-    for (const auto& backend : dnsdist::configuration::getCurrentRuntimeConfiguration().d_backends) {
+    for (const auto& backend : currentConfig.d_backends) {
       if (backend->d_config.d_weight < 100) {
         vinfolog("Warning, the backend '%s' has a very low weight (%d), which will not yield a good distribution of queries with the 'chashed' policy. Please consider raising it to at least '100'.", backend->getName(), backend->d_config.d_weight);
       }
@@ -3266,11 +3285,11 @@ static void startFrontends()
     if (clientState->dohFrontend != nullptr && clientState->dohFrontend->d_library == "h2o") {
 #ifdef HAVE_DNS_OVER_HTTPS
 #ifdef HAVE_LIBH2OEVLOOP
-      std::thread dotThreadHandle(dohThread, clientState.get());
+      std::thread dohThreadHandle(dohThread, clientState.get());
       if (!clientState->cpus.empty()) {
-        mapThreadToCPUList(dotThreadHandle.native_handle(), clientState->cpus);
+        mapThreadToCPUList(dohThreadHandle.native_handle(), clientState->cpus);
       }
-      dotThreadHandle.detach();
+      dohThreadHandle.detach();
 #endif /* HAVE_LIBH2OEVLOOP */
 #endif /* HAVE_DNS_OVER_HTTPS */
       continue;
@@ -3442,9 +3461,6 @@ int main(int argc, char** argv)
     }
 #endif
     dnsdist::initRandom();
-    dnsdist::configuration::updateImmutableConfiguration([](dnsdist::configuration::ImmutableConfiguration& config) {
-      config.d_hashPerturbation = dnsdist::getRandomValue(0xffffffff);
-    });
 
 #ifdef HAVE_XSK
     try {
@@ -3528,6 +3544,14 @@ int main(int argc, char** argv)
       _exit(EXIT_FAILURE);
 #endif
     }
+
+    // we only want to update this value if it has not been set by either the Lua or YAML configuration,
+    // and we need to stop touching this value once the backends' hashes have been computed, in setupPools()
+    dnsdist::configuration::updateImmutableConfiguration([](dnsdist::configuration::ImmutableConfiguration& config) {
+      if (config.d_hashPerturbation == 0) {
+        config.d_hashPerturbation = dnsdist::getRandomValue(0xffffffff);
+      }
+    });
 
     setupPools();
 

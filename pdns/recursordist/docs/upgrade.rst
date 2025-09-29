@@ -4,6 +4,23 @@ Upgrade Guide
 Before upgrading, it is advised to read the :doc:`changelog/index`.
 When upgrading several versions, please read **all** notes applying to the upgrade.
 
+5.3.0 to master
+---------------
+
+New Settings
+^^^^^^^^^^^^
+
+- The :ref:`setting-yaml-outgoing.cookies` setting has been introduced to implement cookie support for contacting authoritative servers and forwarders. See :rfc:`7873` and :rfc:`9018`.
+- The :ref:`setting-yaml-outgoing.cookies_unsupported` setting has been introduced to permanently mark authoritative servers as not supporting cookies.
+
+:program:`rec_control`
+^^^^^^^^^^^^^^^^^^^^^^
+
+- The ``dump-cookies`` subcommand has been added to dump a table showing cookie support for each
+authoritative server contacted recently.
+- The ``clear-cookies`` subcommand has been added to clear entries from the cookie support table.
+- The ``add-cookies-unsupported`` subcommand has been added to mark an authoritative server as not supporting cookies.
+
 5.2.0 to 5.3.0
 --------------
 
@@ -13,6 +30,7 @@ Changed behaviour
 Reloading ACLs using ``rec_control reload-acls`` now also reloads the proxy-protocol related settings.
 
 The :program:`Recursor` now listens on ``::1`` in addition to ``127.0.0.1`` by default.
+It is not an error if listening on ``::1`` fails.
 
 New Settings
 ^^^^^^^^^^^^
@@ -29,8 +47,8 @@ Changed Settings
 
 The :ref:`setting-yaml-recursor.event_trace_enabled` setting has gained a value to allow openTelemetry Trace data to be included in the Protobuf log stream.
 
-5.0.12, 5.1.6 and 5.2.4
------------------------
+5.0.12, 5.1.6, 5.2.4 and 5.3.0
+------------------------------
 
 New settings
 ^^^^^^^^^^^^

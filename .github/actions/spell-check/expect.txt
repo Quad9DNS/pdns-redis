@@ -19,6 +19,7 @@ agentxperms
 aggr
 Aguiar
 ahupowerdns
+aidarwinawards
 Aips
 Aki
 AKq
@@ -246,6 +247,7 @@ cvstrac
 CXXFLAGS
 cxxsettings
 cxxsupport
+Cybertinus
 daemonized
 daemonizing
 daemontools
@@ -982,6 +984,7 @@ pacnal
 papersize
 PARAMKEYWORDS
 passthrough
+passwordless
 PATC
 patchlevels
 pathconfig

@@ -1,15 +1,19 @@
 [package]
 name = "recrust"
-# Convention: major/minor is equal to rec's major/minor
-version = "5.3.0"
 edition = "2021"
+# Convention: major/minor is equal to rec's major/minor
+# Note that this line will be automatically updated to the value
+# BUILDER_VERSION when a release tarball is built
+# See builder-support/helpers/update-rust-library-version.py
+# called from meson-dist-script.sh
+version = "5.4.0"
 
 [lib]
 name = "recrust"
 crate-type = ["staticlib"]
 
 [dependencies]
-cxx = "1.0"
+cxx = "1.0.181" # issue #16101
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = { version = "0.9.34" }
 ipnet = "2.8"
@@ -27,7 +31,6 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rustls-pemfile = "2.2"
 pki-types = { package = "rustls-pki-types", version = "1.10" }
 tokio-rustls = { version = "0.26", default-features = false }
-uuid = { version = "1.12.1", features = ["v4"] }
 
 [build-dependencies]
 cxx-build = "1.0"

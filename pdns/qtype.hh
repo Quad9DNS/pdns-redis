@@ -120,6 +120,8 @@ public:
     ZONEMD = 63,
     SVCB = 64,
     HTTPS = 65,
+    HHIT = 67,
+    BRID = 68,
     SPF = 99,
     NID = 104,
     L32 = 105,
@@ -150,6 +152,9 @@ public:
 
   const static map<const string, uint16_t> names;
   const static map<uint16_t, const string> numbers;
+
+  // QTypes that MUST NOT be used with any other QType on the same name.
+  const static std::set<uint16_t> exclusiveEntryTypes;
 
 private:
 
