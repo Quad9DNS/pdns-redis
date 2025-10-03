@@ -28,7 +28,9 @@
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
 #include <boost/multi_index/key_extractors.hpp>
+#include <iterator>
 #include <stdexcept>
+#include <tuple>
 #include <type_traits>
 #include <vector>
 #include <random>
@@ -421,6 +423,9 @@ public:
   {
     unsigned int d_maxKicks{500};
     uint32_t d_maxEntries{100000};
+    bool d_ttlEnabled;
+    unsigned int d_ttl;
+    bool d_lruEnabled;
   };
 
   CuckooFilter(CuckooSettings settings) :
@@ -432,10 +437,7 @@ public:
 
   void insertKey(const std::string& key) override
   {
-    auto [i1, i2] = get_indices_and_fingerprint(key);
-    Fingerprint fp = static_cast<Fingerprint>(murmur_hash(key) & FINGERPRINT_MASK);
-    if (fp == EMPTY_FINGERPRINT)
-      fp = 1;
+    auto [i1, i2, fp] = get_indices_and_fingerprint(key);
 
     // Try optimistic insert in both buckets
     if (d_buckets[i1].try_insert_optimistic(fp) || d_buckets[i2].try_insert_optimistic(fp)) {
@@ -450,12 +452,22 @@ public:
     // Cuckoo eviction
     size_t cur_index = i1;
     Fingerprint cur_fp = fp;
+    uint8_t cur_counter = 0;
 
     for (size_t kick = 0; kick < d_settings.d_maxKicks; ++kick) {
-      cur_fp = d_buckets[cur_index].kick_random(cur_fp, d_gen);
+      if (d_settings.d_lruEnabled) {
+        bool kicked = d_buckets[cur_index].kick_lru(cur_fp, cur_fp, cur_counter, cur_counter);
+        if (!kicked) {
+          return;
+        }
+      }
+      else {
+        cur_fp = d_buckets[cur_index].kick_random(cur_fp, d_gen);
+      }
       cur_index = alt_index(cur_index, cur_fp);
 
       if (d_buckets[cur_index].try_insert_optimistic(cur_fp) || d_buckets[cur_index].insert_with_lock(cur_fp)) {
+        // TODO: counter is lost here and reset to 1 - probably not good
         return;
       }
     }
@@ -470,10 +482,7 @@ public:
 
   bool contains(const std::string& key) override
   {
-    auto [i1, i2] = get_indices_and_fingerprint(key);
-    Fingerprint fp = static_cast<Fingerprint>(murmur_hash(key) & FINGERPRINT_MASK);
-    if (fp == EMPTY_FINGERPRINT)
-      fp = 1;
+    auto [i1, i2, fp] = get_indices_and_fingerprint(key);
 
     return d_buckets[i1].contains(fp) || d_buckets[i2].contains(fp);
   }
@@ -515,12 +524,14 @@ private:
   struct Bucket
   {
     std::atomic<Fingerprint> fingerprints[BUCKET_SIZE];
+    std::atomic<uint8_t> counters[BUCKET_SIZE];
     mutable std::shared_mutex mutex; // Fine-grained locking per bucket
 
     Bucket()
     {
       for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         fingerprints[i].store(EMPTY_FINGERPRINT, std::memory_order_relaxed);
+        counters[i].store(0, std::memory_order_relaxed);
       }
     }
 
@@ -531,6 +542,7 @@ private:
         Fingerprint expected = EMPTY_FINGERPRINT;
         if (fingerprints[i].compare_exchange_weak(expected, fp,
                                                   std::memory_order_acq_rel, std::memory_order_acquire)) {
+          counters[i].store(1, std::memory_order_release);
           return true;
         }
       }
@@ -544,6 +556,7 @@ private:
       for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         if (fingerprints[i].load(std::memory_order_acquire) == EMPTY_FINGERPRINT) {
           fingerprints[i].store(fp, std::memory_order_release);
+          counters[i].store(1, std::memory_order_release);
           return true;
         }
       }
@@ -551,11 +564,12 @@ private:
     }
 
     // Lookup with minimal locking
-    bool contains(Fingerprint fp) const
+    bool contains(Fingerprint fp)
     {
       // First try optimistic read
       for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         if (fingerprints[i].load(std::memory_order_acquire) == fp) {
+          counters[i].fetch_add(1, std::memory_order_relaxed);
           return true;
         }
       }
@@ -569,6 +583,7 @@ private:
       for (size_t i = 0; i < BUCKET_SIZE; ++i) {
         if (fingerprints[i].load(std::memory_order_acquire) == fp) {
           fingerprints[i].store(EMPTY_FINGERPRINT, std::memory_order_release);
+          counters[i].store(0, std::memory_order_release);
           return true;
         }
       }
@@ -584,14 +599,38 @@ private:
       return old_fp;
     }
 
-    bool is_full() const
+    // For LRU cuckoo eviction - returns true if fingeprint was evicted - the fingeprint is stored in kicked_fp
+    bool kick_lru(Fingerprint new_fp, Fingerprint& kicked_fp, uint8_t newCounter, uint8_t& counter)
     {
+      std::unique_lock<std::shared_mutex> lock(mutex);
+      uint8_t min = newCounter;
+      size_t pos = BUCKET_SIZE;
       for (size_t i = 0; i < BUCKET_SIZE; ++i) {
-        if (fingerprints[i].load(std::memory_order_acquire) == EMPTY_FINGERPRINT) {
-          return false;
+        uint8_t current = counters[i].load(std::memory_order_acquire);
+        if (current < min) {
+          pos = i;
         }
       }
+      if (pos < BUCKET_SIZE) {
+        counter = counters[pos].exchange(newCounter, std::memory_order_acq_rel);
+      }
+      else {
+        return false;
+      }
+      Fingerprint old_fp = fingerprints[pos].exchange(new_fp, std::memory_order_acq_rel);
+      kicked_fp = old_fp;
       return true;
+    }
+
+    void access_slot(int slot)
+    {
+      if (counters[slot].load(std::memory_order_acquire) == 255) {
+        // Age all counters when one saturates
+        for (int i = 0; i < 4; i++) {
+          counters[i].store(counters[i].load(std::memory_order_acquire) >> 1, std::memory_order_release);
+        }
+      }
+      counters[slot].fetch_add(1, std::memory_order_relaxed);
     }
   };
 
@@ -610,7 +649,7 @@ private:
   }
 
   // Hash and fingerprint calculation
-  std::pair<size_t, size_t> get_indices_and_fingerprint(const std::string& data) const
+  std::tuple<size_t, size_t, Fingerprint> get_indices_and_fingerprint(const std::string& data) const
   {
     uint64_t hash = fnv1a_hash(data);
     uint32_t fingerprint_raw = murmur_hash(data);
@@ -623,7 +662,7 @@ private:
     size_t i1 = hash & d_numBucketsMask;
     size_t i2 = (i1 ^ (bucket & d_numBucketsMask)) & d_numBucketsMask;
 
-    return {i1, i2};
+    return {i1, i2, fp};
   }
 
   uint32_t murmur_hash(const std::string& data, const uint32_t seed = 0x9747b28c) const

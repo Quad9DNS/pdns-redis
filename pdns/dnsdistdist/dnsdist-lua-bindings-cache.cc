@@ -52,13 +52,19 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     return std::shared_ptr<cache_t>(new BloomFilter({.d_numCells = maxEntries}));
   });
 
-  luaCtx.writeFunction("newCuckooFilter", [](boost::optional<LuaAssociativeTable<boost::variant<std::string>>> vars) {
+  luaCtx.writeFunction("newCuckooFilter", [](boost::optional<LuaAssociativeTable<boost::variant<bool, std::string>>> vars) {
     unsigned int maxEntries{100000};
     unsigned int maxKicks{500};
+    bool lruEnabled{false};
+    bool ttlEnabled{false};
+    unsigned int ttl{100};
     getOptionalIntegerValue<unsigned int>("newCuckooFilter", vars, "maxEntries", maxEntries);
     getOptionalIntegerValue<unsigned int>("newCuckooFilter", vars, "maxKicks", maxKicks);
+    getOptionalValue<bool>(vars, "ttlEnabled", ttlEnabled);
+    getOptionalValue<bool>(vars, "lruEnabled", lruEnabled);
+    getOptionalIntegerValue<unsigned int>("newCuckooFilter", vars, "ttl", ttl);
 
-    return std::shared_ptr<cache_t>(new CuckooFilter({.d_maxKicks = maxKicks, .d_maxEntries = maxEntries}));
+    return std::shared_ptr<cache_t>(new CuckooFilter({.d_maxKicks = maxKicks, .d_maxEntries = maxEntries, .d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled}));
   });
 
   luaCtx.registerFunction<boost::optional<std::string> (std::shared_ptr<cache_t>::*)(const std::string&)>("get", [](std::shared_ptr<cache_t>& cache, const std::string& key) {
