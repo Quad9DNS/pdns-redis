@@ -55,7 +55,7 @@ if [ ! -z "$(git rev-parse --abbrev-ref HEAD 2> /dev/null)" ]; then
     # would break upgrades for those running master
     # This _should_ be ok for forever if we stick to X.Y.Z for version numbers
     LAST_TAG=0.0
-    COMMITS_SINCE_TAG="$(git rev-list --count 12c868770afc20b6cc0da439d881105151d557dd..HEAD 2> /dev/null).0"
+    COMMITS_SINCE_TAG="$(git rev-list --count 12c868770afc20b6cc0da439d881105151d557dd..HEAD 2> /dev/null)"
     [ "${COMMITS_SINCE_TAG}" = ".0" ] && COMMITS_SINCE_TAG=0.0
     GIT_HASH="g$(git rev-parse HEAD | cut -c1-10 2> /dev/null)"
   fi
@@ -71,7 +71,7 @@ if [ ! -z "$(git rev-parse --abbrev-ref HEAD 2> /dev/null)" ]; then
     fi
   fi
 
-  VERSION="${LAST_TAG}-${COMMITS_SINCE_TAG}.${BRANCH}.${GIT_HASH}${DIRTY}"
+  VERSION="${LAST_TAG}.${COMMITS_SINCE_TAG}-${BRANCH}.${GIT_HASH}${DIRTY}"
 fi
 
 printf $VERSION
