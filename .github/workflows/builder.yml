@@ -2,15 +2,7 @@
 name: 'Test package building for specific distributions'
 
 on:
-  workflow_call:
-    inputs:
-      branch-name:
-        description: 'Checkout to a specific branch'
-        required: true
-        default: ''
-        type: string
-  schedule:
-    - cron: '0 1 * * *'
+  workflow_dispatch:
 
 permissions: # least privileges, see https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#permissions
   contents: read
@@ -28,16 +20,14 @@ jobs:
 
   build:
     name: build.sh
-    if: ${{ vars.SCHEDULED_JOBS_BUILDER || github.event_name != 'schedule' }}
     needs: prepare
     runs-on: ${{ matrix.runner-os }}
     strategy:
       matrix:
-        product: ['authoritative', 'recursor', 'dnsdist']
+        product: ['dnsdist']
         os:
-          - centos-9-stream
-          - centos-10-stream
-          - amazon-2023
+          - debian-bookworm
+          - debian-trixie
         runner-os: ${{ fromJson(needs.prepare.outputs.runnerlist )}}
       fail-fast: false
     steps:
