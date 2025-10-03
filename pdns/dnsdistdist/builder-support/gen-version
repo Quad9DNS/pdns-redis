@@ -60,7 +60,7 @@ if [ ! -z "$(git rev-parse --abbrev-ref HEAD 2> /dev/null)" ]; then
     GIT_HASH="g$(git rev-parse HEAD | cut -c1-10 2> /dev/null)"
   fi
 
-  BRANCH=".$(git rev-parse --abbrev-ref HEAD | perl -p -e 's/[^[:alnum:]]//g;')"
+  BRANCH="$(git rev-parse --abbrev-ref HEAD | perl -p -e 's/[^[:alnum:]]//g;')"
 
   TAG="$(git describe --tags --exact-match 2> /dev/null | cut -d- -f 2-)"
   if [ -n "${TAG}" ]; then # We're exactly on a tag
