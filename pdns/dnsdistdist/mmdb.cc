@@ -20,6 +20,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include <boost/variant/get.hpp>
+#include <memory>
 #include <string>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -49,95 +51,56 @@ MMDB::MMDB(const std::string& fname, const std::string& modeStr)
   vinfolog("Opened MMDB database %s (type: %s version: %d.%d)", fname, d_db.metadata.database_type, d_db.metadata.binary_format_major_version, d_db.metadata.binary_format_minor_version);
 }
 
-bool MMDB::queryCountry(string& ret, const ComboAddress& ip)
+// TODO: use MMDB_get_entry_data_list() to support arrays and maps
+bool MMDB::query(boost::variant<std::string, bool, int, double>& ret, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip)
 {
   MMDB_entry_data_s data;
   MMDB_lookup_result_s res;
   if (!mmdbLookup(ip, res))
     return false;
-  if (MMDB_get_value(&res.entry, &data, "country", "iso_code", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  ret = string(data.utf8_string, data.data_size);
-  return true;
-}
 
-bool MMDB::queryContinent(string& ret, const ComboAddress& ip)
-{
-  MMDB_entry_data_s data;
-  MMDB_lookup_result_s res;
-  if (!mmdbLookup(ip, res))
-    return false;
-  if (MMDB_get_value(&res.entry, &data, "continent", "code", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  ret = string(data.utf8_string, data.data_size);
-  return true;
-}
+  if (auto q = boost::get<std::string>(&queryParams)) {
+    if (MMDB_get_value(&res.entry, &data, q, NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+  }
+  else if (auto params = boost::get<std::vector<std::pair<int, std::string>>>(&queryParams)) {
+    auto paramsArray = std::make_unique<const char*[]>(params->size() + 1);
+    for (size_t i = 0; i < params->size(); ++i) {
+      paramsArray[i] = params->at(i).second.c_str();
+    }
+    paramsArray[params->size()] = NULL;
+    if (MMDB_aget_value(&res.entry, &data, paramsArray.get()) != MMDB_SUCCESS || !data.has_data)
+      return false;
+  }
 
-bool MMDB::queryAS(string& ret, const ComboAddress& ip)
-{
-  MMDB_entry_data_s data;
-  MMDB_lookup_result_s res;
-  if (!mmdbLookup(ip, res))
+  switch (data.type) {
+  case MMDB_DATA_TYPE_BOOLEAN:
+    ret = data.boolean;
+    break;
+  case MMDB_DATA_TYPE_UTF8_STRING:
+    ret = string(data.utf8_string, data.data_size);
+    break;
+  case MMDB_DATA_TYPE_DOUBLE:
+    ret = data.double_value;
+    break;
+  case MMDB_DATA_TYPE_FLOAT:
+    ret = data.float_value;
+    break;
+  case MMDB_DATA_TYPE_INT32:
+    ret = data.int32;
+    break;
+  case MMDB_DATA_TYPE_UINT16:
+    ret = data.uint16;
+    break;
+  case MMDB_DATA_TYPE_UINT32:
+    ret = (int)data.uint32;
+    break;
+  case MMDB_DATA_TYPE_UINT64:
+    ret = (int)data.uint64;
+    break;
+  default:
     return false;
-  if (MMDB_get_value(&res.entry, &data, "autonomous_system_organization", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  ret = string(data.utf8_string, data.data_size);
-  return true;
-}
-
-bool MMDB::queryASN(string& ret, const ComboAddress& ip)
-{
-  MMDB_entry_data_s data;
-  MMDB_lookup_result_s res;
-  if (!mmdbLookup(ip, res))
-    return false;
-  if (MMDB_get_value(&res.entry, &data, "autonomous_system_number", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  ret = std::to_string(data.uint32);
-  return true;
-}
-
-bool MMDB::queryRegion(string& ret, const ComboAddress& ip)
-{
-  MMDB_entry_data_s data;
-  MMDB_lookup_result_s res;
-  if (!mmdbLookup(ip, res))
-    return false;
-  if (MMDB_get_value(&res.entry, &data, "subdivisions", "0", "iso_code", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  ret = string(data.utf8_string, data.data_size);
-  return true;
-}
-
-bool MMDB::queryCity(string& ret, const ComboAddress& ip, const string& language)
-{
-  MMDB_entry_data_s data;
-  MMDB_lookup_result_s res;
-  if (!mmdbLookup(ip, res))
-    return false;
-  if ((MMDB_get_value(&res.entry, &data, "cities", "0", NULL) != MMDB_SUCCESS || !data.has_data) && (MMDB_get_value(&res.entry, &data, "city", "names", language.c_str(), NULL) != MMDB_SUCCESS || !data.has_data))
-    return false;
-  ret = string(data.utf8_string, data.data_size);
-  return true;
-}
-
-bool MMDB::queryLocation(double& latitude, double& longitude,
-                         int& prec,
-                         const ComboAddress& ip)
-{
-  MMDB_entry_data_s data;
-  MMDB_lookup_result_s res;
-  if (!mmdbLookup(ip, res))
-    return false;
-  if (MMDB_get_value(&res.entry, &data, "location", "latitude", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  latitude = data.double_value;
-  if (MMDB_get_value(&res.entry, &data, "location", "longitude", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  longitude = data.double_value;
-  if (MMDB_get_value(&res.entry, &data, "location", "accuracy_radius", NULL) != MMDB_SUCCESS || !data.has_data)
-    return false;
-  prec = data.uint16;
+  }
   return true;
 }
 

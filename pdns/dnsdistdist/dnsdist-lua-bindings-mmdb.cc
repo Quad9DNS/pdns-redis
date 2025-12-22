@@ -38,104 +38,27 @@ void setupLuaBindingsMMDB(LuaContext& luaCtx)
     return mmdb;
   });
 
-  luaCtx.registerFunction<std::optional<std::string> (std::shared_ptr<MMDB>::*)(const ComboAddress&)>("queryCountry", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip) {
-    std::optional<std::string> result{std::nullopt};
+  luaCtx.registerFunction<std::optional<boost::variant<std::string, bool, int, double>> (std::shared_ptr<MMDB>::*)(const LuaTypeOrArrayOf<std::string>&, const ComboAddress&)>("query", [](std::shared_ptr<MMDB>& mmdb, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip) {
+    std::optional<boost::variant<std::string, bool, int, double>> result{std::nullopt};
     if (!mmdb) {
       return result;
     }
 
-    std::string value;
-    if (mmdb->queryCountry(value, ip)) {
+    boost::variant<std::string, bool, int, double> value{false};
+    if (mmdb->query(value, queryParams, ip)) {
       result = value;
     }
 
     return result;
   });
 
-  luaCtx.registerFunction<std::optional<std::string> (std::shared_ptr<MMDB>::*)(const ComboAddress&)>("queryContinent", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip) {
-    std::optional<std::string> result{std::nullopt};
+  luaCtx.registerFunction<bool (std::shared_ptr<MMDB>::*)(const ComboAddress&)>("exists", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip) {
+    bool result = false;
     if (!mmdb) {
       return result;
     }
 
-    std::string value;
-    if (mmdb->queryContinent(value, ip)) {
-      result = value;
-    }
-
-    return result;
-  });
-
-  luaCtx.registerFunction<std::optional<std::string> (std::shared_ptr<MMDB>::*)(const ComboAddress&)>("queryAS", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip) {
-    std::optional<std::string> result{std::nullopt};
-    if (!mmdb) {
-      return result;
-    }
-
-    std::string value;
-    if (mmdb->queryAS(value, ip)) {
-      result = value;
-    }
-
-    return result;
-  });
-
-  luaCtx.registerFunction<std::optional<std::string> (std::shared_ptr<MMDB>::*)(const ComboAddress&)>("queryASN", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip) {
-    std::optional<std::string> result{std::nullopt};
-    if (!mmdb) {
-      return result;
-    }
-
-    std::string value;
-    if (mmdb->queryASN(value, ip)) {
-      result = value;
-    }
-
-    return result;
-  });
-
-  luaCtx.registerFunction<std::optional<std::string> (std::shared_ptr<MMDB>::*)(const ComboAddress&)>("queryRegion", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip) {
-    std::optional<std::string> result{std::nullopt};
-    if (!mmdb) {
-      return result;
-    }
-
-    std::string value;
-    if (mmdb->queryRegion(value, ip)) {
-      result = value;
-    }
-
-    return result;
-  });
-
-  luaCtx.registerFunction<std::optional<std::string> (std::shared_ptr<MMDB>::*)(const ComboAddress&, const std::string&)>("queryCity", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip, const std::string& language) {
-    std::optional<std::string> result{std::nullopt};
-    if (!mmdb) {
-      return result;
-    }
-
-    std::string value;
-    if (mmdb->queryCity(value, ip, language)) {
-      result = value;
-    }
-
-    return result;
-  });
-
-  luaCtx.registerFunction<std::optional<std::tuple<double, double, int>> (std::shared_ptr<MMDB>::*)(const ComboAddress&)>("queryLocation", [](std::shared_ptr<MMDB>& mmdb, const ComboAddress& ip) {
-    std::optional<std::tuple<double, double, int>> result{std::nullopt};
-    if (!mmdb) {
-      return result;
-    }
-
-    double lat;
-    double lon;
-    int prec;
-    if (mmdb->queryLocation(lat, lon, prec, ip)) {
-      result = {lat, lon, prec};
-    }
-
-    return result;
+    return mmdb->exists(ip);
   });
 #endif
 }

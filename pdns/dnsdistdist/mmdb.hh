@@ -21,6 +21,7 @@
  */
 #pragma once
 
+#include "dnsdist-lua.hh"
 #include "iputils.hh"
 #include <maxminddb.h>
 #include <string>
@@ -30,13 +31,7 @@ class MMDB
 public:
   MMDB(const std::string& fname, const std::string& modeStr);
 
-  bool queryCountry(std::string& ret, const ComboAddress& ip);
-  bool queryContinent(std::string& ret, const ComboAddress& ip);
-  bool queryAS(std::string& ret, const ComboAddress& ip);
-  bool queryASN(std::string& ret, const ComboAddress& ip);
-  bool queryRegion(std::string& ret, const ComboAddress& ip);
-  bool queryCity(std::string& ret, const ComboAddress& ip, const std::string& language);
-  bool queryLocation(double& latitude, double& longitude, int& prec, const ComboAddress& ip);
+  bool query(boost::variant<std::string, bool, int, double>& ret, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip);
   bool exists(const ComboAddress& ip)
   {
     MMDB_lookup_result_s res;
