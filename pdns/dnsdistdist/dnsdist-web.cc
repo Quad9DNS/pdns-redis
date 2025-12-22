@@ -907,7 +907,7 @@ static void handlePrometheus(const YaHTTP::Request& req, YaHTTP::Response& resp)
     if (cacheName.empty()) {
       cacheName = "_default_";
     }
-    const std::shared_ptr<GenericCacheInterface<std::string, std::string>> cache = entry.second;
+    const std::shared_ptr<GenericCacheInterface<std::string, std::optional<std::string>>> cache = entry.second;
 
     const auto& stats = cache->getStats();
 

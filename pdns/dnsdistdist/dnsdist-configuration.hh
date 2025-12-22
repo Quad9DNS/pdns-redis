@@ -124,7 +124,7 @@ struct RuntimeConfiguration
   std::vector<dnsdist::Carbon::Endpoint> d_carbonEndpoints;
 #endif /* DISABLE_CARBON */
   std::unordered_map<std::string, ServerPool> d_pools;
-  std::unordered_map<std::string, std::shared_ptr<GenericCacheInterface<std::string, std::string>>> d_caches;
+  std::unordered_map<std::string, std::shared_ptr<GenericCacheInterface<std::string, std::optional<std::string>>>> d_caches;
 #ifdef HAVE_REDIS
   std::unordered_map<std::string, std::shared_ptr<RedisStats>> d_redisStats;
 #endif /* HAVE_REDIS */

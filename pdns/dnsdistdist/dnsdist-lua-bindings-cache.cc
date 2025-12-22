@@ -24,7 +24,7 @@
 #include <memory>
 #include <stdexcept>
 
-using cache_t = GenericCacheInterface<std::string, std::string>;
+using cache_t = GenericCacheInterface<std::string, std::optional<std::string>>;
 
 void setupLuaBindingsCache(LuaContext& luaCtx)
 {
@@ -42,7 +42,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "lruDeleteUpTo", lruDeleteUpTo);
     getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "ttl", ttl);
 
-    auto cache = std::shared_ptr<cache_t>(new GenericCache<std::string, std::string>({.d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled, .d_shardCount = shardCount, .d_maxEntries = maxEntries, .d_lruDeleteUpTo = lruDeleteUpTo}));
+    auto cache = std::shared_ptr<cache_t>(new GenericCache<std::string, std::optional<std::string>>({.d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled, .d_shardCount = shardCount, .d_maxEntries = maxEntries, .d_lruDeleteUpTo = lruDeleteUpTo}));
 
     dnsdist::configuration::updateRuntimeConfiguration([name, &cache](dnsdist::configuration::RuntimeConfiguration& config) {
       if (config.d_caches.count(name) > 0) {
@@ -109,11 +109,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
       return result;
     }
 
-    std::string value;
-    if (cache->getValue(key, value)) {
-      result = value;
-    }
-
+    cache->getValue(key, result);
     return result;
   });
 
@@ -133,7 +129,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     return cache->contains(key);
   });
 
-  luaCtx.registerFunction<void (std::shared_ptr<cache_t>::*)(const std::string&, std::string)>("insert", [](std::shared_ptr<cache_t>& cache, const std::string& key, std::string value) {
+  luaCtx.registerFunction<void (std::shared_ptr<cache_t>::*)(const std::string&, std::optional<std::string>)>("insert", [](std::shared_ptr<cache_t>& cache, const std::string& key, std::optional<std::string> value) {
     if (!cache) {
       return;
     }

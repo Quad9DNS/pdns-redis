@@ -397,7 +397,7 @@ private:
   typename GenericCacheInterface<K, V>::Stats d_stats{"filter=\"none\""};
 };
 
-class BloomFilter : public GenericCacheInterface<std::string, std::string>
+class BloomFilter : public GenericCacheInterface<std::string, std::optional<std::string>>
 {
 public:
   struct BloomSettings
@@ -421,7 +421,7 @@ public:
     d_stats.d_entriesCount += 1;
   }
 
-  void insert(const std::string& key, [[maybe_unused]] std::string value) override
+  void insert(const std::string& key, [[maybe_unused]] std::optional<std::string> value) override
   {
     insertKey(key);
   }
@@ -444,7 +444,7 @@ public:
     return false;
   }
 
-  bool getValue(const std::string& key, [[maybe_unused]] std::string& value) override
+  bool getValue(const std::string& key, [[maybe_unused]] std::optional<std::string>& value) override
   {
     return contains(key);
   }
@@ -461,7 +461,7 @@ public:
     return 0;
   }
 
-  [[nodiscard]] virtual const GenericCacheInterface<std::string, std::string>::Stats& getStats() const override
+  [[nodiscard]] virtual const GenericCacheInterface<std::string, std::optional<std::string>>::Stats& getStats() const override
   {
     return d_stats;
   }
@@ -469,10 +469,10 @@ public:
 private:
   BloomSettings d_settings;
   LockGuarded<bf::stableBF> d_sbf;
-  GenericCacheInterface<std::string, std::string>::Stats d_stats{"filter=\"bloom\""};
+  GenericCacheInterface<std::string, std::optional<std::string>>::Stats d_stats{"filter=\"bloom\""};
 };
 
-class CuckooFilter : public GenericCacheInterface<std::string, std::string>
+class CuckooFilter : public GenericCacheInterface<std::string, std::optional<std::string>>
 {
 public:
   struct CuckooSettings
@@ -571,7 +571,7 @@ public:
     return; // Filter is full
   }
 
-  void insert(const std::string& key, [[maybe_unused]] std::string value) override
+  void insert(const std::string& key, [[maybe_unused]] std::optional<std::string> value) override
   {
     insertKey(key);
   }
@@ -620,7 +620,7 @@ public:
     return removed;
   }
 
-  bool getValue(const std::string& key, [[maybe_unused]] std::string& value) override
+  bool getValue(const std::string& key, [[maybe_unused]] std::optional<std::string>& value) override
   {
     return contains(key);
   }
@@ -652,14 +652,14 @@ public:
     return 0;
   }
 
-  [[nodiscard]] virtual const GenericCacheInterface<std::string, std::string>::Stats& getStats() const override
+  [[nodiscard]] virtual const GenericCacheInterface<std::string, std::optional<std::string>>::Stats& getStats() const override
   {
     return d_stats;
   }
 
 private:
   using Fingerprint = uint32_t;
-  using stats_t = GenericCacheInterface<std::string, std::string>::Stats;
+  using stats_t = GenericCacheInterface<std::string, std::optional<std::string>>::Stats;
 
   static constexpr Fingerprint EMPTY_FINGERPRINT = 0;
 
@@ -929,5 +929,5 @@ private:
   std::vector<LockGuarded<Bucket>> d_buckets;
   std::mt19937 d_gen;
   time_t d_lastScan;
-  GenericCacheInterface<std::string, std::string>::Stats d_stats{"filter=\"cuckoo\""};
+  GenericCacheInterface<std::string, std::optional<std::string>>::Stats d_stats{"filter=\"cuckoo\""};
 };
