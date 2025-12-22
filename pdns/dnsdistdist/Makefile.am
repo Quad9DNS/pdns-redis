@@ -236,7 +236,7 @@ dnsdist_SOURCES = \
 	dnsdist-lua-rules.cc \
 	dnsdist-lua-vars.cc \
 	dnsdist-lua-web.cc \
-	dnsdist-lua.cc dnsdist-lua.hh \
+	dnsdist-lua.cc dnsdist-lua.hh dnsdist-lua-types.hh \
 	dnsdist-mac-address.cc dnsdist-mac-address.hh \
 	dnsdist-metrics.cc dnsdist-metrics.hh \
 	dnsdist-nghttp2-in.hh \

@@ -26,6 +26,7 @@
 #include <sys/resource.h>
 #include <thread>
 
+#include "dnsdist-lua-types.hh"
 #include "ext/json11/json11.hpp"
 #include <yahttp/yahttp.hpp>
 
@@ -907,7 +908,7 @@ static void handlePrometheus(const YaHTTP::Request& req, YaHTTP::Response& resp)
     if (cacheName.empty()) {
       cacheName = "_default_";
     }
-    const std::shared_ptr<GenericCacheInterface<std::string, std::optional<std::string>>> cache = entry.second;
+    const std::shared_ptr<GenericCacheInterface<std::string, std::optional<LuaAny>>> cache = entry.second;
 
     const auto& stats = cache->getStats();
 

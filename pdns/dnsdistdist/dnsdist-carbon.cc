@@ -19,6 +19,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#include "dnsdist-lua-types.hh"
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
@@ -238,7 +239,7 @@ static bool doOneCarbonExport(const Carbon::Endpoint& endpoint)
       base += ".caches.";
       base += cacheName;
       base += ".";
-      const std::shared_ptr<GenericCacheInterface<std::string, std::optional<std::string>>> cache = entry.second;
+      const std::shared_ptr<GenericCacheInterface<std::string, std::optional<LuaAny>>> cache = entry.second;
       const auto& stats = cache->getStats();
       str << base << "memory-used"
           << " " << stats.d_memoryUsed << " " << now << "\r\n";
