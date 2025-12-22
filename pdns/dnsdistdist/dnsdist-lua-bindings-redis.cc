@@ -25,6 +25,9 @@
 #include "redis.hh"
 #endif /* HAVE_REDIS */
 
+using AnyPrimitive = boost::variant<std::string, bool, int, double>;
+using RawRet = boost::variant<std::string, bool, int, double, LuaAssociativeTable<AnyPrimitive>, LuaArray<AnyPrimitive>>;
+
 void setupLuaBindingsRedis([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] bool client)
 {
 #ifdef HAVE_REDIS
@@ -40,6 +43,21 @@ void setupLuaBindingsRedis([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]]
     checkAllParametersConsumed("newRedisClient", vars);
 
     return std::make_shared<RedisClient>(url, pipelineEnabled, pipelineInterval);
+  });
+
+  luaCtx.registerFunction<RawRet (std::shared_ptr<RedisClient>::*)(const LuaArray<std::string>&)>("raw", [](std::shared_ptr<RedisClient>& rc, const LuaArray<std::string>& raw_command) {
+    RawRet result;
+    if (!rc) {
+      return result;
+    }
+
+    auto reply = RedisRawCommand{}(*rc, raw_command);
+
+    if (reply->ok()) {
+      result = reply->getValue();
+    }
+
+    return result;
   });
 
   luaCtx.registerFunction<std::string (std::shared_ptr<RedisClient>::*)(const std::string&)>("get", [](std::shared_ptr<RedisClient>& rc, const std::string& key) {

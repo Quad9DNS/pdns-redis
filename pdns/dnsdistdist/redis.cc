@@ -95,6 +95,16 @@ std::unique_ptr<RedisReplyInterface<std::unordered_set<std::string>>> RedisZrang
   return std::make_unique<RedisSetReply>(client.executeCommand("ZRANGE %b %d %d BYLEX", set_key.data(), set_key.length(), start, stop));
 }
 
+std::unique_ptr<RedisReplyInterface<RawRet>> RedisRawCommand::operator()(const RedisClient& client, const LuaArray<std::string>& raw_command) const
+{
+  std::vector<std::string> command{raw_command.size()};
+  for (size_t i = 0; i < raw_command.size(); ++i) {
+    command[i] = raw_command[i].second;
+  }
+
+  return std::make_unique<RedisRawReply>(client.executeCommandArgv(command));
+}
+
 std::unique_ptr<RedisReplyInterface<std::string>> RedisGetLookupAction::getValue(const RedisClient& client, const std::string& key) const
 {
   return d_getCommand(client, d_prefix + key);
