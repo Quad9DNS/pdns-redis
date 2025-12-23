@@ -21,6 +21,7 @@
  */
 #pragma once
 
+#include "dnsdist-lua-types.hh"
 #include "dnsdist-lua.hh"
 #include "generic-cache.hh"
 #include "channel.hh"
@@ -31,9 +32,6 @@
 #include <memory>
 #include <string>
 #include "redis-stats.hh"
-
-using AnyPrimitive = boost::variant<std::string, bool, int, double>;
-using RawRet = boost::variant<std::string, bool, int, double, LuaAssociativeTable<AnyPrimitive>, LuaArray<AnyPrimitive>>;
 
 class RedisClient;
 
@@ -294,7 +292,7 @@ public:
   }
 };
 
-class RedisRawReply : public RedisReply<RawRet>
+class RedisRawReply : public RedisReply<LuaAny>
 {
 public:
   RedisRawReply(redisReply* reply) :
@@ -305,34 +303,13 @@ public:
   {
     return d_reply;
   }
-  RawRet getValue() const override
+  LuaAny getValue() const override
   {
-    RawRet result;
-    switch (d_reply->type) {
-    case REDIS_REPLY_INTEGER:
-    case REDIS_REPLY_DOUBLE:
-    case REDIS_REPLY_STRING:
-    case REDIS_REPLY_STATUS:
-    case REDIS_REPLY_BIGNUM:
-    case REDIS_REPLY_VERB:
-      if (auto primitive = getPrimitive(d_reply)) {
-        result = primitive.value();
-      }
-      break;
-    case REDIS_REPLY_ARRAY:
-    case REDIS_REPLY_SET:
-    case REDIS_REPLY_PUSH:
-      result = parseArray();
-      break;
-    case REDIS_REPLY_MAP:
-      result = parseMap();
-      break;
-    }
-    return result;
+    return parseReply(d_reply).value();
   }
 
 private:
-  std::optional<AnyPrimitive> getPrimitive(redisReply* element) const
+  std::optional<LuaAny> parseReply(redisReply* element) const
   {
     switch (element->type) {
     case REDIS_REPLY_INTEGER:
@@ -351,26 +328,34 @@ private:
     case REDIS_REPLY_VERB:
       return std::string(element->str, element->len);
       break;
+    case REDIS_REPLY_ARRAY:
+    case REDIS_REPLY_SET:
+    case REDIS_REPLY_PUSH:
+      return parseArray();
+      break;
+    case REDIS_REPLY_MAP:
+      return parseMap();
+      break;
     }
     return std::nullopt;
   }
 
-  std::vector<std::pair<int, AnyPrimitive>> parseArray() const
+  LuaArray<LuaAny> parseArray() const
   {
-    std::vector<std::pair<int, AnyPrimitive>> res{d_reply->elements};
+    LuaArray<LuaAny> res{d_reply->elements};
     for (size_t i = 0; i < d_reply->elements; i++) {
-      if (auto primitive = getPrimitive(d_reply->element[i])) {
-        res[i] = std::make_pair(i + 1, primitive.value());
+      if (auto value = parseReply(d_reply->element[i])) {
+        res[i] = std::make_pair(i + 1, value.value());
       }
     }
     return res;
   }
 
-  std::unordered_map<std::string, AnyPrimitive> parseMap() const
+  LuaAssociativeTable<LuaAny> parseMap() const
   {
-    std::unordered_map<std::string, AnyPrimitive> res{d_reply->elements / 2};
+    LuaAssociativeTable<LuaAny> res{d_reply->elements / 2};
     for (size_t i = 0; i < d_reply->elements / 2; i += 2) {
-      if (auto value = getPrimitive(d_reply->element[i + 1])) {
+      if (auto value = parseReply(d_reply->element[i + 1])) {
         res.emplace(d_reply->element[i]->str, value.value());
       }
     }
@@ -435,9 +420,9 @@ struct RedisZrangeBylexCommand : public RedisCommand<std::unordered_set<std::str
   std::unique_ptr<RedisReplyInterface<std::unordered_set<std::string>>> operator()(const RedisClient& client, const std::string& set_key, const size_t& start, const size_t& stop) const override;
 };
 
-struct RedisRawCommand : public RedisCommand<RawRet, LuaArray<std::string>>
+struct RedisRawCommand : public RedisCommand<LuaAny, LuaArray<std::string>>
 {
-  std::unique_ptr<RedisReplyInterface<RawRet>> operator()(const RedisClient& client, const LuaArray<std::string>& raw_command) const override;
+  std::unique_ptr<RedisReplyInterface<LuaAny>> operator()(const RedisClient& client, const LuaArray<std::string>& raw_command) const override;
 };
 
 class RedisLookupAction
