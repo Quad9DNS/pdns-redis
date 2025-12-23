@@ -309,54 +309,54 @@ public:
   }
 
 private:
-  std::optional<LuaAny> parseReply(redisReply* element) const
+  std::optional<LuaAny> parseReply(redisReply* reply) const
   {
-    switch (element->type) {
+    switch (reply->type) {
     case REDIS_REPLY_INTEGER:
       // TODO: narrowing conversion
-      return (int)element->integer;
+      return (int)reply->integer;
       break;
     case REDIS_REPLY_DOUBLE:
-      return element->dval;
+      return reply->dval;
       break;
     case REDIS_REPLY_BOOL:
-      return element->integer > 0;
+      return reply->integer > 0;
       break;
     case REDIS_REPLY_STRING:
     case REDIS_REPLY_STATUS:
     case REDIS_REPLY_BIGNUM:
     case REDIS_REPLY_VERB:
-      return std::string(element->str, element->len);
+      return std::string(reply->str, reply->len);
       break;
     case REDIS_REPLY_ARRAY:
     case REDIS_REPLY_SET:
     case REDIS_REPLY_PUSH:
-      return parseArray();
+      return parseArray(reply);
       break;
     case REDIS_REPLY_MAP:
-      return parseMap();
+      return parseMap(reply);
       break;
     }
     return std::nullopt;
   }
 
-  LuaArray<LuaAny> parseArray() const
+  LuaArray<LuaAny> parseArray(redisReply* data) const
   {
-    LuaArray<LuaAny> res{d_reply->elements};
-    for (size_t i = 0; i < d_reply->elements; i++) {
-      if (auto value = parseReply(d_reply->element[i])) {
+    LuaArray<LuaAny> res{data->elements};
+    for (size_t i = 0; i < data->elements; i++) {
+      if (auto value = parseReply(data->element[i])) {
         res[i] = std::make_pair(i + 1, value.value());
       }
     }
     return res;
   }
 
-  LuaAssociativeTable<LuaAny> parseMap() const
+  LuaAssociativeTable<LuaAny> parseMap(redisReply* data) const
   {
-    LuaAssociativeTable<LuaAny> res{d_reply->elements / 2};
-    for (size_t i = 0; i < d_reply->elements / 2; i += 2) {
-      if (auto value = parseReply(d_reply->element[i + 1])) {
-        res.emplace(d_reply->element[i]->str, value.value());
+    LuaAssociativeTable<LuaAny> res{data->elements / 2};
+    for (size_t i = 0; i < data->elements / 2; i += 2) {
+      if (auto value = parseReply(data->element[i + 1])) {
+        res.emplace(data->element[i]->str, value.value());
       }
     }
     return res;
