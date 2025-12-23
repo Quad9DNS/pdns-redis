@@ -316,27 +316,32 @@ private:
       // TODO: narrowing conversion
       return (int)reply->integer;
       break;
+    case REDIS_REPLY_STRING:
+    case REDIS_REPLY_STATUS:
+#if HIREDIS_MAJOR > 0
+    case REDIS_REPLY_BIGNUM:
+    case REDIS_REPLY_VERB:
+#endif
+      return std::string(reply->str, reply->len);
+      break;
+    case REDIS_REPLY_ARRAY:
+#if HIREDIS_MAJOR > 0
+    case REDIS_REPLY_SET:
+#endif
+      return parseArray(reply);
+      break;
+#if HIREDIS_MAJOR > 0
     case REDIS_REPLY_DOUBLE:
       return reply->dval;
       break;
     case REDIS_REPLY_BOOL:
       return reply->integer > 0;
       break;
-    case REDIS_REPLY_STRING:
-    case REDIS_REPLY_STATUS:
-    case REDIS_REPLY_BIGNUM:
-    case REDIS_REPLY_VERB:
-      return std::string(reply->str, reply->len);
-      break;
-    case REDIS_REPLY_ARRAY:
-    case REDIS_REPLY_SET:
-    case REDIS_REPLY_PUSH:
-      return parseArray(reply);
-      break;
     case REDIS_REPLY_MAP:
       return parseMap(reply);
       break;
     }
+#endif
     return std::nullopt;
   }
 
@@ -351,6 +356,7 @@ private:
     return res;
   }
 
+#if HIREDIS_MAJOR > 0
   LuaAssociativeTable<LuaAny> parseMap(redisReply* data) const
   {
     LuaAssociativeTable<LuaAny> res{data->elements / 2};
@@ -361,6 +367,7 @@ private:
     }
     return res;
   }
+#endif
 };
 
 template <typename T, typename... Args>
