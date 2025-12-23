@@ -19,6 +19,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#include "dnsdist-lua-types.hh"
 #include "dnsdist-lua.hh"
 #include "iputils.hh"
 #include <memory>
@@ -38,13 +39,13 @@ void setupLuaBindingsMMDB(LuaContext& luaCtx)
     return mmdb;
   });
 
-  luaCtx.registerFunction<std::optional<boost::variant<std::string, bool, int, double>> (std::shared_ptr<MMDB>::*)(const LuaTypeOrArrayOf<std::string>&, const ComboAddress&)>("query", [](std::shared_ptr<MMDB>& mmdb, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip) {
-    std::optional<boost::variant<std::string, bool, int, double>> result{std::nullopt};
+  luaCtx.registerFunction<std::optional<LuaAny> (std::shared_ptr<MMDB>::*)(const LuaTypeOrArrayOf<std::string>&, const ComboAddress&)>("query", [](std::shared_ptr<MMDB>& mmdb, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip) {
+    std::optional<LuaAny> result{std::nullopt};
     if (!mmdb) {
       return result;
     }
 
-    boost::variant<std::string, bool, int, double> value{false};
+    LuaAny value{false};
     if (mmdb->query(value, queryParams, ip)) {
       result = value;
     }

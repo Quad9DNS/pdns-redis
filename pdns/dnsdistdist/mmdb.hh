@@ -21,18 +21,21 @@
  */
 #pragma once
 
-#include "dnsdist-lua.hh"
+#include "dnsdist-lua-types.hh"
 #include "iputils.hh"
 #include <maxminddb.h>
+#include <memory>
 #include <string>
+
+class MMDBEntryList;
 
 class MMDB
 {
 public:
   MMDB(const std::string& fname, const std::string& modeStr);
 
-  bool query(boost::variant<std::string, bool, int, double>& ret, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip);
-  bool exists(const ComboAddress& ip)
+  bool query(LuaAny& ret, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip) const;
+  bool exists(const ComboAddress& ip) const
   {
     MMDB_lookup_result_s res;
     return mmdbLookup(ip, res);
@@ -43,5 +46,27 @@ public:
 private:
   MMDB_s d_db;
 
-  bool mmdbLookup(const ComboAddress& ip, MMDB_lookup_result_s& res);
+  // Decodes one of the basic types (no arrays and maps)
+  bool mmdbDecode(MMDB_entry_data_s* data, LuaAny& ret) const;
+  // Decodes whole entry data list (supports arrays and maps too)
+  bool mmdbDecodeEntryList(MMDB_entry_data_list_s** data, LuaAny& ret) const;
+  bool mmdbDecodeMap(MMDB_entry_data_list_s** data, LuaAny& ret) const;
+  bool mmdbDecodeArray(MMDB_entry_data_list_s** data, LuaAny& ret) const;
+  bool mmdbLookup(const ComboAddress& ip, MMDB_lookup_result_s& res) const;
+  std::optional<MMDBEntryList> getEntryList(MMDB_entry_s* entry) const;
+};
+
+class MMDBEntryList
+{
+public:
+  MMDBEntryList(MMDB_entry_data_list_s* first) :
+    d_entry_list_first(first, MMDB_free_entry_data_list) {}
+
+  MMDB_entry_data_list_s* getFirst() const
+  {
+    return d_entry_list_first.get();
+  }
+
+private:
+  std::unique_ptr<MMDB_entry_data_list_s, decltype(&MMDB_free_entry_data_list)> d_entry_list_first;
 };

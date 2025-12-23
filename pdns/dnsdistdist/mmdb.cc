@@ -20,6 +20,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
+#include "dnsdist-lua-types.hh"
 #include <boost/variant/get.hpp>
 #include <memory>
 #include <string>
@@ -51,8 +52,7 @@ MMDB::MMDB(const std::string& fname, const std::string& modeStr)
   vinfolog("Opened MMDB database %s (type: %s version: %d.%d)", fname, d_db.metadata.database_type, d_db.metadata.binary_format_major_version, d_db.metadata.binary_format_minor_version);
 }
 
-// TODO: use MMDB_get_entry_data_list() to support arrays and maps
-bool MMDB::query(boost::variant<std::string, bool, int, double>& ret, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip)
+bool MMDB::query(LuaAny& ret, const LuaTypeOrArrayOf<std::string>& queryParams, const ComboAddress& ip) const
 {
   MMDB_entry_data_s data;
   MMDB_lookup_result_s res;
@@ -73,30 +73,46 @@ bool MMDB::query(boost::variant<std::string, bool, int, double>& ret, const LuaT
       return false;
   }
 
-  switch (data.type) {
+  if (mmdbDecode(&data, ret)) {
+    return true;
+  }
+
+  MMDB_entry_s data_entry{&d_db, data.offset};
+  auto elistopt = getEntryList(&data_entry);
+  if (!elistopt) {
+    return false;
+  }
+  auto elist = std::move(*elistopt);
+  auto first = elist.getFirst();
+  return mmdbDecodeEntryList(&first, ret);
+}
+
+bool MMDB::mmdbDecode(MMDB_entry_data_s* data, LuaAny& ret) const
+{
+  switch (data->type) {
   case MMDB_DATA_TYPE_BOOLEAN:
-    ret = data.boolean;
+    ret = data->boolean;
     break;
   case MMDB_DATA_TYPE_UTF8_STRING:
-    ret = string(data.utf8_string, data.data_size);
+    ret = string(data->utf8_string, data->data_size);
     break;
   case MMDB_DATA_TYPE_DOUBLE:
-    ret = data.double_value;
+    ret = data->double_value;
     break;
   case MMDB_DATA_TYPE_FLOAT:
-    ret = data.float_value;
+    ret = data->float_value;
     break;
   case MMDB_DATA_TYPE_INT32:
-    ret = data.int32;
+    ret = data->int32;
     break;
   case MMDB_DATA_TYPE_UINT16:
-    ret = data.uint16;
+    ret = data->uint16;
     break;
   case MMDB_DATA_TYPE_UINT32:
-    ret = (int)data.uint32;
+    ret = (int)data->uint32;
     break;
   case MMDB_DATA_TYPE_UINT64:
-    ret = (int)data.uint64;
+    ret = (int)data->uint64;
     break;
   default:
     return false;
@@ -104,21 +120,114 @@ bool MMDB::query(boost::variant<std::string, bool, int, double>& ret, const LuaT
   return true;
 }
 
-bool MMDB::mmdbLookup(const ComboAddress& ip, MMDB_lookup_result_s& res)
+bool MMDB::mmdbDecodeEntryList(MMDB_entry_data_list_s** data, LuaAny& ret) const
+{
+  switch ((*data)->entry_data.type) {
+  case MMDB_DATA_TYPE_BOOLEAN:
+  case MMDB_DATA_TYPE_UTF8_STRING:
+  case MMDB_DATA_TYPE_DOUBLE:
+  case MMDB_DATA_TYPE_FLOAT:
+  case MMDB_DATA_TYPE_INT32:
+  case MMDB_DATA_TYPE_UINT16:
+  case MMDB_DATA_TYPE_UINT32:
+  case MMDB_DATA_TYPE_UINT64:
+    return mmdbDecode(&((*data)->entry_data), ret);
+  case MMDB_DATA_TYPE_ARRAY:
+    return mmdbDecodeArray(data, ret);
+    break;
+  case MMDB_DATA_TYPE_MAP:
+    return mmdbDecodeMap(data, ret);
+    break;
+  default:
+    return false;
+  }
+}
+
+bool MMDB::mmdbDecodeMap(MMDB_entry_data_list_s** data, LuaAny& ret) const
+{
+  LuaAssociativeTable<LuaAny> result;
+
+  MMDB_entry_data_list_s* this_data = *data;
+
+  for (auto size = this_data->entry_data.data_size; size > 0; --size) {
+    *data = (*data)->next;
+
+    if (!*data) {
+      break;
+    }
+
+    if ((*data)->entry_data.type != MMDB_DATA_TYPE_UTF8_STRING) {
+      // Invalid key, stop decoding
+      return false;
+    }
+
+    std::string key{(*data)->entry_data.utf8_string, (*data)->entry_data.data_size};
+
+    *data = (*data)->next;
+    if (!*data) {
+      break;
+    }
+
+    LuaAny value;
+    if (!mmdbDecodeEntryList(data, value)) {
+      // Failed value decoding, stop decoding
+      return false;
+    }
+
+    result.emplace(key, value);
+  }
+
+  ret = result;
+  return true;
+}
+
+bool MMDB::mmdbDecodeArray(MMDB_entry_data_list_s** data, LuaAny& ret) const
+{
+  LuaArray<LuaAny> result;
+
+  MMDB_entry_data_list_s* this_data = *data;
+
+  for (uint32_t i = 0; i < this_data->entry_data.data_size; ++i) {
+    *data = (*data)->next;
+
+    if (!*data) {
+      break;
+    }
+
+    LuaAny value;
+    if (!mmdbDecodeEntryList(data, value)) {
+      // Failed value decoding, stop decoding
+      return false;
+    }
+
+    result.emplace_back(i + 1, value);
+  }
+
+  ret = result;
+  return true;
+}
+
+bool MMDB::mmdbLookup(const ComboAddress& ip, MMDB_lookup_result_s& res) const
 {
   int mmdb_ec = 0;
   res = MMDB_lookup_sockaddr(&d_db, reinterpret_cast<const struct sockaddr*>(&ip), &mmdb_ec);
 
   if (mmdb_ec != MMDB_SUCCESS) {
-    vinfolog("MMDB_lookup_sockaddr(%s) failed: %s", ip.toString(), MMDB_strerror(mmdb_ec));
+    vinfolog("mmdbLookup(%s) failed: %s", ip.toString(), MMDB_strerror(mmdb_ec));
   }
   else if (res.found_entry) {
-    // gl.netmask = res.netmask;
-    // /* If it's a IPv6 database, IPv4 netmasks are reduced from 128, so we need to deduct
-    //    96 to get from [96,128] => [0,32] range */
-    // if (!v6 && gl.netmask > 32)
-    //   gl.netmask -= 96;
     return true;
   }
   return false;
+}
+
+std::optional<MMDBEntryList> MMDB::getEntryList(MMDB_entry_s* entry) const
+{
+  MMDB_entry_data_list_s* entry_data_list;
+  int status = MMDB_get_entry_data_list(entry, &entry_data_list);
+
+  if (status != MMDB_SUCCESS) {
+    return std::nullopt;
+  }
+  return {entry_data_list};
 }
