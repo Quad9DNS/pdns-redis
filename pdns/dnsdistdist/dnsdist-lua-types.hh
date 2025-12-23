@@ -22,8 +22,10 @@
 #pragma once
 
 #include <boost/any.hpp>
+#include <boost/variant/recursive_variant.hpp>
 #include <boost/variant/recursive_wrapper.hpp>
 #include <boost/variant/variant.hpp>
+#include <boost/variant/variant_fwd.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +36,9 @@ template <class T>
 using LuaAssociativeTable = std::unordered_map<std::string, T>;
 template <class T>
 using LuaTypeOrArrayOf = boost::variant<T, LuaArray<T>>;
-using LuaPrimitive = boost::variant<std::string, int, double, bool>;
-// Almost any - nested tables not supported
-using LuaAny = boost::variant<std::string, int, double, bool, LuaArray<LuaPrimitive>, LuaAssociativeTable<LuaPrimitive>>;
+#ifdef BOOST_VARIANT_NO_FULL_RECURSIVE_VARIANT_SUPPORT
+// TODO: this type doesn't support nesting, which might break some stuff
+using LuaAny = boost::variant<std::string, int, double, bool, LuaArray<std::string, int, double, bool>, LuaAssociativeTable<std::string, int, double, bool>>;
+#else
+using LuaAny = boost::make_recursive_variant<std::string, int, double, bool, LuaArray<boost::recursive_variant_>, LuaAssociativeTable<boost::recursive_variant_>>::type;
+#endif
