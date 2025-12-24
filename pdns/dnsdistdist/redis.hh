@@ -340,8 +340,8 @@ private:
     case REDIS_REPLY_MAP:
       return parseMap(reply);
       break;
-    }
 #endif
+    }
     return std::nullopt;
   }
 
