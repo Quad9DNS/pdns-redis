@@ -133,6 +133,7 @@ export PKG_CONFIG_PATH=/usr/lib/pkgconfig:/opt/lib64/pkgconfig
   -Dxsk=disabled \
 %endif
   -Debpf=enabled \
+  -Dmmdb=enabled \
   -Dredis=enabled \
   -Dyaml=enabled
 %meson_build
