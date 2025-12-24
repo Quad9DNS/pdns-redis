@@ -9,7 +9,7 @@
 
 #include "dnsdist-kvs.hh"
 
-#if defined(HAVE_LMDB) || defined(HAVE_CDB) || defined(HAVE_REDIS)
+#if defined(HAVE_LMDB) || defined(HAVE_CDB)
 static const ComboAddress v4ToMask("203.0.113.255");
 static const ComboAddress v6ToMask("2001:db8:ff:ff:ff:ff:ff:ff");
 
@@ -292,7 +292,6 @@ static void doKVSRangeChecks(std::unique_ptr<KeyValueStore>& kvs)
     check(notInRange1, false);
     check(notInRange2, false);
   }
-
 }
 #endif // defined(HAVE_LMDB)
 
@@ -301,7 +300,8 @@ static void doKVSRangeChecks(std::unique_ptr<KeyValueStore>& kvs)
 BOOST_AUTO_TEST_SUITE(dnsdistkvs_cc)
 
 #ifdef HAVE_LMDB
-BOOST_AUTO_TEST_CASE(test_LMDB) {
+BOOST_AUTO_TEST_CASE(test_LMDB)
+{
 
   InternalQueryState ids;
   ids.qname = DNSName("powerdns.com.");
@@ -386,7 +386,8 @@ BOOST_AUTO_TEST_CASE(test_LMDB) {
 #endif /* HAVE_LMDB */
 
 #ifdef HAVE_CDB
-BOOST_AUTO_TEST_CASE(test_CDB) {
+BOOST_AUTO_TEST_CASE(test_CDB)
+{
 
   InternalQueryState ids;
   ids.qname = DNSName("powerdns.com.");
