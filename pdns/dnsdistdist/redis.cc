@@ -23,6 +23,7 @@
 #include "gettime.hh"
 #include "threadname.hh"
 #include <condition_variable>
+#include <memory>
 #include <stdexcept>
 #ifdef HAVE_CONFIG_H
 #include "config.h"
@@ -201,6 +202,36 @@ bool RedisSscanLookupAction::getFromCopyCache(GenericCacheInterface<std::string,
     value = "1";
     return true;
   }
+  return false;
+}
+
+std::unique_ptr<RedisReplyInterface<std::string>> RedisRawLookupAction::getValue(const RedisClient& client, const std::string& key) const
+{
+  LuaArray<std::string> args(std::max(d_keyArgPos + 1, d_args.size()));
+  for (size_t i = 0; i < d_args.size(); ++i) {
+    args[i] = {i + 1, d_args[i]};
+  }
+  args[d_keyArgPos] = {d_keyArgPos + 1, key};
+  return std::make_unique<RedisRawAsStringReply>(d_rawCommand(client, args));
+}
+
+std::unique_ptr<RedisReplyInterface<bool>> RedisRawLookupAction::keyExists(const RedisClient& client, const std::string& key) const
+{
+  LuaArray<std::string> args(std::max(d_keyArgPosInExists + 1, d_existsArgs.size()));
+  for (size_t i = 0; i < d_existsArgs.size(); ++i) {
+    args[i] = {i + 1, d_existsArgs[i]};
+  }
+  args[d_keyArgPosInExists] = {d_keyArgPosInExists + 1, key};
+  return std::make_unique<RedisRawAsBoolReply>(d_rawCommand(client, args));
+}
+
+std::unordered_map<std::string, std::string> RedisRawLookupAction::generateCopyCache([[maybe_unused]] const RedisClient& client) const
+{
+  return {};
+}
+
+bool RedisRawLookupAction::getFromCopyCache([[maybe_unused]] GenericCacheInterface<std::string, std::string>& cache, [[maybe_unused]] const std::string& key, [[maybe_unused]] std::string& value) const
+{
   return false;
 }
 

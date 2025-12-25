@@ -25,6 +25,7 @@
 #include "dnsdist-lua.hh"
 #include "generic-cache.hh"
 #include "channel.hh"
+#include "ext/json11/json11.hpp"
 #include "lock.hh"
 #include <thread>
 #include <yahttp/yahttp.hpp>
@@ -307,6 +308,10 @@ public:
   {
     return parseReply(d_reply).value();
   }
+  std::optional<LuaAny> getValueOpt() const
+  {
+    return parseReply(d_reply);
+  }
 
 private:
   std::optional<LuaAny> parseReply(redisReply* reply) const
@@ -368,6 +373,75 @@ private:
     return res;
   }
 #endif
+};
+
+class RedisRawAsBoolReply : public MappedRedisReply<LuaAny, bool>
+{
+public:
+  RedisRawAsBoolReply(std::unique_ptr<RedisReplyInterface<LuaAny>> inner) :
+    MappedRedisReply(std::move(inner))
+  {
+  }
+  bool getValue() const override
+  {
+    RedisRawReply* rawReply = static_cast<RedisRawReply*>(d_inner.get());
+    return rawReply->getValueOpt().has_value();
+  }
+};
+
+class RedisRawAsStringReply : public MappedRedisReply<LuaAny, std::string>
+{
+public:
+  RedisRawAsStringReply(std::unique_ptr<RedisReplyInterface<LuaAny>> inner) :
+    MappedRedisReply(std::move(inner))
+  {
+  }
+  std::string getValue() const override
+  {
+    auto result = d_inner->getValue();
+    if (result.type() == typeid(std::string)) {
+      return boost::get<std::string>(result);
+    }
+
+    json11::Json json = parseAny(result);
+    return json.dump();
+  }
+
+private:
+  json11::Json parseAny(const LuaAny& any) const
+  {
+    if (any.type() == typeid(std::string)) {
+      return json11::Json(boost::get<std::string>(any));
+    }
+    else if (any.type() == typeid(int)) {
+      return json11::Json(boost::get<int>(any));
+    }
+    else if (any.type() == typeid(double)) {
+      return json11::Json(boost::get<double>(any));
+    }
+    else if (any.type() == typeid(bool)) {
+      return json11::Json(boost::get<bool>(any));
+    }
+    else if (any.type() == typeid(LuaArray<LuaAny>)) {
+      auto luaArray = boost::get<LuaArray<LuaAny>>(any);
+      std::vector<json11::Json> array(luaArray.size());
+      for (auto& kv : luaArray) {
+        array.emplace_back(parseAny(kv.second));
+      }
+      return json11::Json(array);
+    }
+    else if (any.type() == typeid(LuaAssociativeTable<LuaAny>)) {
+      auto luaTable = boost::get<LuaAssociativeTable<LuaAny>>(any);
+      std::unordered_map<std::string, json11::Json> map(luaTable.size());
+      for (auto& kv : map) {
+        map.emplace(kv.first, kv.second);
+      }
+      return json11::Json(map);
+    }
+    else {
+      return json11::Json();
+    }
+  }
 };
 
 template <typename T, typename... Args>
@@ -523,6 +597,26 @@ public:
 private:
   std::string d_set_key;
   RedisSScanCommand d_sScanCommand;
+};
+
+class RedisRawLookupAction : public RedisLookupAction
+{
+public:
+  RedisRawLookupAction(const std::vector<std::string>& args, const std::optional<std::vector<std::string>>& existsArgs = std::nullopt) :
+    RedisLookupAction("RAW" + std::accumulate(args.begin(), args.end(), std::string(), [](const std::string& acc, const std::string& arg) { return acc + (acc.empty() ? std::string() : ",") + arg; })), d_args(args), d_existsArgs(existsArgs.value_or(d_args)), d_keyArgPos(find(args.begin(), args.end(), "{}") - args.begin()), d_keyArgPosInExists(existsArgs ? find(existsArgs.value().begin(), existsArgs.value().end(), "{}") - existsArgs.value().begin() : d_keyArgPos)
+  {
+  }
+  bool getFromCopyCache(GenericCacheInterface<std::string, std::string>& cache, const std::string& key, std::string& value) const override;
+  std::unique_ptr<RedisReplyInterface<std::string>> getValue(const RedisClient& client, const std::string& key) const override;
+  std::unordered_map<std::string, std::string> generateCopyCache(const RedisClient& client) const override;
+  std::unique_ptr<RedisReplyInterface<bool>> keyExists(const RedisClient& client, const std::string& key) const override;
+
+private:
+  std::vector<std::string> d_args;
+  std::vector<std::string> d_existsArgs;
+  size_t d_keyArgPos;
+  size_t d_keyArgPosInExists;
+  RedisRawCommand d_rawCommand;
 };
 
 class RedisClient

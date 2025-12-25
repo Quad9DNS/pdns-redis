@@ -20,6 +20,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
 #include "dnsdist-kvs.hh"
+#include "dnsdist-lua-types.hh"
 #include "dnsdist-lua.hh"
 #include <memory>
 
@@ -44,7 +45,7 @@ void setupLuaBindingsKVS([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] b
 #endif /* HAVE_CDB */
 
 #ifdef HAVE_REDIS
-  luaCtx.writeFunction("newRedisKVStore", [client](const std::shared_ptr<RedisClient>& redisClient, std::optional<LuaAssociativeTable<boost::variant<std::string, bool, std::shared_ptr<GenericCacheInterface<std::string, std::string>>>>> vars) {
+  luaCtx.writeFunction("newRedisKVStore", [client](const std::shared_ptr<RedisClient>& redisClient, std::optional<LuaAssociativeTable<boost::variant<std::string, bool, std::shared_ptr<GenericCacheInterface<std::string, std::string>>, LuaArray<std::string>>>> vars) {
     if (client) {
       return std::shared_ptr<KeyValueStore>(nullptr);
     }
@@ -56,15 +57,38 @@ void setupLuaBindingsKVS([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] b
     unsigned int copyCacheTtl{0};
     std::optional<std::string> lookupAction;
     std::optional<std::string> dataName;
+    std::optional<LuaArray<std::string>> rawArgsInput;
+    std::optional<LuaArray<std::string>> rawExistsArgsInput;
     getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "resultCache", resultCache);
     getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "negativeCache", negativeCache);
     getOptionalValue<bool>(vars, "copyCacheEnabled", copyCacheEnabled);
     getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "copyCacheFilter", copyCacheFilter);
     getOptionalIntegerValue<unsigned int>("newRedisKVStore", vars, "copyCacheTtl", copyCacheTtl);
     getOptionalValue<std::string>(vars, "dataName", dataName);
+    getOptionalValue<LuaArray<std::string>>(vars, "rawArgs", rawArgsInput);
+    getOptionalValue<LuaArray<std::string>>(vars, "rawExistsArgs", rawExistsArgsInput);
     getOptionalValue<std::string>(vars, "lookupAction", lookupAction);
 
     checkAllParametersConsumed("newRedisKVStore", vars);
+
+    std::optional<std::vector<std::string>> rawArgs;
+    std::optional<std::vector<std::string>> rawExistsArgs;
+
+    if (rawArgsInput) {
+      auto rawInput = rawArgsInput.value();
+      rawArgs = std::vector<std::string>(rawArgsInput.value().size());
+      for (const auto& value : rawInput) {
+        rawArgs->emplace_back(value.second);
+      }
+    }
+
+    if (rawExistsArgsInput) {
+      auto rawInput = rawExistsArgsInput.value();
+      rawExistsArgs = std::vector<std::string>(rawExistsArgsInput.value().size());
+      for (const auto& value : rawInput) {
+        rawExistsArgs->emplace_back(value.second);
+      }
+    }
 
     std::string uniqueId = "url=" + redisClient->getUrl().to_string() + ",action=" + lookupAction.value_or("GET") + ",data-name=" + dataName.value_or("") + ",copy-cache=" + (copyCacheEnabled ? "true" : "false") + ",";
     std::string labels = "redis-server=" + redisClient->getUrl().host + ":" + std::to_string(redisClient->getUrl().port) + ",redis-action=" + lookupAction.value_or("GET") + ",data-name=" + dataName.value_or("") + ",copy-cache=" + (copyCacheEnabled ? "true" : "false");
@@ -77,7 +101,7 @@ void setupLuaBindingsKVS([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] b
       config.d_redisStats.emplace(uniqueId, std::shared_ptr(stats));
     });
 
-    return std::shared_ptr<KeyValueStore>(new RedisKVStore(redisClient, lookupAction, dataName, copyCacheEnabled, copyCacheTtl, resultCache, negativeCache, copyCacheFilter, stats));
+    return std::shared_ptr<KeyValueStore>(new RedisKVStore(redisClient, lookupAction, dataName, rawArgs, rawExistsArgs, copyCacheEnabled, copyCacheTtl, resultCache, negativeCache, copyCacheFilter, stats));
   });
 #endif /* HAVE_REDIS */
 
