@@ -603,7 +603,7 @@ class RedisRawLookupAction : public RedisLookupAction
 {
 public:
   RedisRawLookupAction(const std::vector<std::string>& args, const std::optional<std::vector<std::string>>& existsArgs = std::nullopt) :
-    RedisLookupAction("RAW" + std::accumulate(args.begin(), args.end(), std::string(), [](const std::string& acc, const std::string& arg) { return acc + (acc.empty() ? std::string() : ",") + arg; })), d_args(args), d_existsArgs(existsArgs.value_or(d_args)), d_keyArgPos(find(args.begin(), args.end(), "{}") - args.begin()), d_keyArgPosInExists(existsArgs ? find(existsArgs.value().begin(), existsArgs.value().end(), "{}") - existsArgs.value().begin() : d_keyArgPos)
+    RedisLookupAction("RAW" + std::accumulate(args.begin(), args.end(), std::string(), [](const std::string& acc, const std::string& arg) { return acc + (acc.empty() ? std::string() : ",") + arg; })), d_args(args), d_existsArgs(existsArgs.value_or(d_args)), d_keyArgPos(find(args.begin(), args.end(), "{}") - args.begin()), d_keyArgPosInString(d_keyArgPos < d_args.size() ? args[d_keyArgPos].find("{}") : 0), d_keyArgPosInExists(existsArgs ? find(existsArgs.value().begin(), existsArgs.value().end(), "{}") - existsArgs.value().begin() : d_keyArgPos), d_keyArgPosInExistsInString(d_keyArgPosInExists < d_existsArgs.size() ? d_existsArgs[d_keyArgPosInExists].find("{}") : 0)
   {
   }
   bool getFromCopyCache(GenericCacheInterface<std::string, std::string>& cache, const std::string& key, std::string& value) const override;
@@ -615,7 +615,9 @@ private:
   std::vector<std::string> d_args;
   std::vector<std::string> d_existsArgs;
   size_t d_keyArgPos;
+  size_t d_keyArgPosInString;
   size_t d_keyArgPosInExists;
+  size_t d_keyArgPosInExistsInString;
   RedisRawCommand d_rawCommand;
 };
 
