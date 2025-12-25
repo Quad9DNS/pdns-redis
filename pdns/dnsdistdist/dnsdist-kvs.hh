@@ -22,6 +22,8 @@
 #pragma once
 
 #include "dnsdist.hh"
+#include "dnsdist-lua-types.hh"
+#include "ext/json11/json11.hpp"
 #include "iputils.hh"
 
 class KeyValueLookupKey
@@ -222,6 +224,30 @@ private:
 };
 
 #endif /* HAVE_LMDB */
+
+#ifdef HAVE_MMDB
+
+#include "mmdb.hh"
+
+class MMDBKVStore : public KeyValueStore
+{
+  MMDBKVStore(const std::shared_ptr<MMDB> mmdb, const LuaTypeOrArrayOf<std::string>& queryParams) :
+    d_mmdb(mmdb), d_queryParams(queryParams) {};
+
+  bool keyExists(const std::string& key) override;
+  bool getValue(const std::string& key, std::string& value) override;
+  bool reload() override
+  {
+    return true;
+  }
+
+private:
+  json11::Json parseAny(const LuaAny& any);
+
+  std::shared_ptr<MMDB> d_mmdb;
+  LuaTypeOrArrayOf<std::string> d_queryParams;
+};
+#endif // HAVE_MMDB
 
 #ifdef HAVE_REDIS
 

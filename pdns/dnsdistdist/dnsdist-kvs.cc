@@ -21,10 +21,12 @@
  */
 
 #include "dnsdist-kvs.hh"
+#include "dnsdist-lua-types.hh"
 #include "dolog.hh"
 
 #include <memory>
 #include <sys/stat.h>
+#include <boost/variant.hpp>
 
 std::vector<std::string> KeyValueLookupKeySourceIP::getKeys(const ComboAddress& addr)
 {
@@ -284,6 +286,68 @@ bool CDBKVStore::keyExists(const std::string& key)
 }
 
 #endif /* HAVE_CDB */
+
+#ifdef HAVE_MMDB
+
+#include "ext/json11/json11.hpp"
+
+bool MMDBKVStore::keyExists(const std::string& key)
+{
+  auto addr = ComboAddress(key);
+  return d_mmdb->exists(addr);
+}
+bool MMDBKVStore::getValue(const std::string& key, std::string& value)
+{
+  auto addr = ComboAddress(key);
+  LuaAny ret;
+  bool result = d_mmdb->query(ret, d_queryParams, addr);
+  if (ret.type() == typeid(std::string)) {
+    value = boost::get<std::string>(ret);
+    return result;
+  }
+
+  json11::Json json = this->parseAny(ret);
+  json.dump(value);
+
+  return result;
+}
+
+json11::Json MMDBKVStore::parseAny(const LuaAny& any)
+{
+  if (any.type() == typeid(std::string)) {
+    return json11::Json(boost::get<std::string>(any));
+  }
+  else if (any.type() == typeid(int)) {
+    return json11::Json(boost::get<int>(any));
+  }
+  else if (any.type() == typeid(double)) {
+    return json11::Json(boost::get<double>(any));
+  }
+  else if (any.type() == typeid(bool)) {
+    return json11::Json(boost::get<bool>(any));
+  }
+  else if (any.type() == typeid(LuaArray<LuaAny>)) {
+    auto luaArray = boost::get<LuaArray<LuaAny>>(any);
+    std::vector<json11::Json> array(luaArray.size());
+    for (auto& kv : luaArray) {
+      array.emplace_back(parseAny(kv.second));
+    }
+    return json11::Json(array);
+  }
+  else if (any.type() == typeid(LuaAssociativeTable<LuaAny>)) {
+    auto luaTable = boost::get<LuaAssociativeTable<LuaAny>>(any);
+    std::unordered_map<std::string, json11::Json> map(luaTable.size());
+    for (auto& kv : map) {
+      map.emplace(kv.first, kv.second);
+    }
+    return json11::Json(map);
+  }
+  else {
+    return json11::Json();
+  }
+}
+
+#endif // HAVE_MMDB
 
 #ifdef HAVE_REDIS
 

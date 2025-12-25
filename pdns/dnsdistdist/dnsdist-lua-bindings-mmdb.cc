@@ -27,7 +27,7 @@
 #include "mmdb.hh"
 #endif
 
-void setupLuaBindingsMMDB(LuaContext& luaCtx)
+void setupLuaBindingsMMDB([[maybe_unused]] LuaContext& luaCtx)
 {
 #ifdef HAVE_MMDB
   luaCtx.writeFunction("openMMDB", [](const std::string& name, std::optional<LuaAssociativeTable<boost::variant<bool>>> vars) {
