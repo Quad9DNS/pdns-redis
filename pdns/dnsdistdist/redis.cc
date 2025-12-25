@@ -209,9 +209,18 @@ std::unique_ptr<RedisReplyInterface<std::string>> RedisRawLookupAction::getValue
 {
   LuaArray<std::string> args(std::max(d_keyArgPos + 1, d_args.size()));
   for (size_t i = 0; i < d_args.size(); ++i) {
-    args[i] = {i + 1, d_args[i]};
+    if (i == d_keyArgPos) {
+      auto insertedKey = d_args[i];
+      insertedKey.replace(d_keyArgPosInString, size_t(2), key);
+      args[i] = {i + 1, insertedKey};
+    }
+    else {
+      args[i] = {i + 1, d_args[i]};
+    }
   }
-  args[d_keyArgPos] = {d_keyArgPos + 1, key};
+  if (d_keyArgPos >= d_args.size()) {
+    args[d_keyArgPos] = {d_keyArgPos + 1, key};
+  }
   return std::make_unique<RedisRawAsStringReply>(d_rawCommand(client, args));
 }
 
@@ -219,9 +228,18 @@ std::unique_ptr<RedisReplyInterface<bool>> RedisRawLookupAction::keyExists(const
 {
   LuaArray<std::string> args(std::max(d_keyArgPosInExists + 1, d_existsArgs.size()));
   for (size_t i = 0; i < d_existsArgs.size(); ++i) {
-    args[i] = {i + 1, d_existsArgs[i]};
+    if (i == d_keyArgPosInExists) {
+      auto insertedKey = d_existsArgs[i];
+      insertedKey.replace(d_keyArgPosInExistsInString, size_t(2), key);
+      args[i] = {i + 1, insertedKey};
+    }
+    else {
+      args[i] = {i + 1, d_existsArgs[i]};
+    }
   }
-  args[d_keyArgPosInExists] = {d_keyArgPosInExists + 1, key};
+  if (d_keyArgPosInExists >= d_existsArgs.size()) {
+    args[d_keyArgPosInExists] = {d_keyArgPosInExists + 1, key};
+  }
   return std::make_unique<RedisRawAsBoolReply>(d_rawCommand(client, args));
 }
 
