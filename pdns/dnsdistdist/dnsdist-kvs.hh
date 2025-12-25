@@ -231,6 +231,7 @@ private:
 
 class MMDBKVStore : public KeyValueStore
 {
+public:
   MMDBKVStore(const std::shared_ptr<MMDB> mmdb, const LuaTypeOrArrayOf<std::string>& queryParams) :
     d_mmdb(mmdb), d_queryParams(queryParams) {};
 
