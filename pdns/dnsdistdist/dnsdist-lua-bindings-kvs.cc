@@ -54,24 +54,24 @@ void setupLuaBindingsKVS([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] b
 #endif // HAVE_MMDB
 
 #ifdef HAVE_REDIS
-  luaCtx.writeFunction("newRedisKVStore", [client](const std::shared_ptr<RedisClient>& redisClient, std::optional<LuaAssociativeTable<boost::variant<std::string, bool, std::shared_ptr<GenericCacheInterface<std::string, std::string>>, LuaArray<std::string>>>> vars) {
+  luaCtx.writeFunction("newRedisKVStore", [client](const std::shared_ptr<RedisClient>& redisClient, std::optional<LuaAssociativeTable<boost::variant<std::string, bool, std::shared_ptr<GenericCacheInterface<std::string, LuaAny>>, LuaArray<std::string>>>> vars) {
     if (client) {
       return std::shared_ptr<KeyValueStore>(nullptr);
     }
 
-    std::shared_ptr<GenericCacheInterface<std::string, std::string>> resultCache;
-    std::shared_ptr<GenericCacheInterface<std::string, std::string>> negativeCache;
-    std::shared_ptr<GenericCacheInterface<std::string, std::string>> copyCacheFilter;
+    std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> resultCache;
+    std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> negativeCache;
+    std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> copyCacheFilter;
     bool copyCacheEnabled{false};
     unsigned int copyCacheTtl{0};
     std::optional<std::string> lookupAction;
     std::optional<std::string> dataName;
     std::optional<LuaArray<std::string>> rawArgsInput;
     std::optional<LuaArray<std::string>> rawExistsArgsInput;
-    getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "resultCache", resultCache);
-    getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "negativeCache", negativeCache);
+    getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, LuaAny>>>(vars, "resultCache", resultCache);
+    getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, LuaAny>>>(vars, "negativeCache", negativeCache);
     getOptionalValue<bool>(vars, "copyCacheEnabled", copyCacheEnabled);
-    getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, std::string>>>(vars, "copyCacheFilter", copyCacheFilter);
+    getOptionalValue<std::shared_ptr<GenericCacheInterface<std::string, LuaAny>>>(vars, "copyCacheFilter", copyCacheFilter);
     getOptionalIntegerValue<unsigned int>("newRedisKVStore", vars, "copyCacheTtl", copyCacheTtl);
     getOptionalValue<std::string>(vars, "dataName", dataName);
     getOptionalValue<LuaArray<std::string>>(vars, "rawArgs", rawArgsInput);

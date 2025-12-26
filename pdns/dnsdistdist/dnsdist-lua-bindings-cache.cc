@@ -24,7 +24,7 @@
 #include <memory>
 #include <stdexcept>
 
-using cache_t = GenericCacheInterface<std::string, std::optional<LuaAny>>;
+using cache_t = GenericCacheInterface<std::string, LuaAny>;
 
 void setupLuaBindingsCache(LuaContext& luaCtx)
 {
@@ -42,7 +42,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "lruDeleteUpTo", lruDeleteUpTo);
     getOptionalIntegerValue<unsigned int>("newObjectCache", vars, "ttl", ttl);
 
-    auto cache = std::shared_ptr<cache_t>(new GenericCache<std::string, std::optional<LuaAny>>({.d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled, .d_shardCount = shardCount, .d_maxEntries = maxEntries, .d_lruDeleteUpTo = lruDeleteUpTo}));
+    auto cache = std::shared_ptr<cache_t>(new GenericCache<std::string, LuaAny>({.d_ttlEnabled = ttlEnabled, .d_ttl = ttl, .d_lruEnabled = lruEnabled, .d_shardCount = shardCount, .d_maxEntries = maxEntries, .d_lruDeleteUpTo = lruDeleteUpTo}));
 
     dnsdist::configuration::updateRuntimeConfiguration([name, &cache](dnsdist::configuration::RuntimeConfiguration& config) {
       if (config.d_caches.count(name) > 0) {
@@ -104,12 +104,15 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
   });
 
   luaCtx.registerFunction<std::optional<LuaAny> (std::shared_ptr<cache_t>::*)(const std::string&)>("get", [](std::shared_ptr<cache_t>& cache, const std::string& key) {
-    std::optional<LuaAny> result{std::nullopt};
+    std::optional<LuaAny> result;
     if (!cache) {
       return result;
     }
 
-    cache->getValue(key, result);
+    LuaAny value;
+    if (cache->getValue(key, value)) {
+      result = value;
+    }
     return result;
   });
 
@@ -129,7 +132,7 @@ void setupLuaBindingsCache(LuaContext& luaCtx)
     return cache->contains(key);
   });
 
-  luaCtx.registerFunction<void (std::shared_ptr<cache_t>::*)(const std::string&, std::optional<LuaAny>)>("insert", [](std::shared_ptr<cache_t>& cache, const std::string& key, std::optional<LuaAny> value) {
+  luaCtx.registerFunction<void (std::shared_ptr<cache_t>::*)(const std::string&, LuaAny)>("insert", [](std::shared_ptr<cache_t>& cache, const std::string& key, LuaAny value) {
     if (!cache) {
       return;
     }

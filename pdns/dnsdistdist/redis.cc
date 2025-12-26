@@ -66,7 +66,7 @@ std::unique_ptr<RedisReplyInterface<std::vector<std::pair<int, std::optional<std
   return std::make_unique<RedisArrayReply>(client.executeCommandArgv(command));
 }
 
-std::unique_ptr<RedisReplyInterface<std::unordered_map<std::string, std::string>>> RedisHGetAllCommand::operator()(const RedisClient& client, const std::string& hash_key) const
+std::unique_ptr<RedisReplyInterface<std::unordered_map<std::string, LuaAny>>> RedisHGetAllCommand::operator()(const RedisClient& client, const std::string& hash_key) const
 {
   return std::make_unique<RedisHashReply>(client.executeCommand("HGETALL %b", hash_key.data(), hash_key.length()));
 }
@@ -116,12 +116,12 @@ std::unique_ptr<RedisReplyInterface<bool>> RedisGetLookupAction::keyExists(const
   return d_existsCommand(client, d_prefix + key);
 }
 
-std::unordered_map<std::string, std::string> RedisGetLookupAction::generateCopyCache([[maybe_unused]] const RedisClient& client) const
+std::unordered_map<std::string, LuaAny> RedisGetLookupAction::generateCopyCache([[maybe_unused]] const RedisClient& client) const
 {
   return {};
 }
 
-bool RedisGetLookupAction::getFromCopyCache([[maybe_unused]] GenericCacheInterface<std::string, std::string>& cache, [[maybe_unused]] const std::string& key, [[maybe_unused]] std::string& value) const
+bool RedisGetLookupAction::getFromCopyCache([[maybe_unused]] GenericCacheInterface<std::string, LuaAny>& cache, [[maybe_unused]] const std::string& key, [[maybe_unused]] std::string& value) const
 {
   return false;
 }
@@ -136,14 +136,20 @@ std::unique_ptr<RedisReplyInterface<bool>> RedisHGetLookupAction::keyExists(cons
   return d_existsCommand(client, d_hash_key, key);
 }
 
-std::unordered_map<std::string, std::string> RedisHGetLookupAction::generateCopyCache(const RedisClient& client) const
+std::unordered_map<std::string, LuaAny> RedisHGetLookupAction::generateCopyCache(const RedisClient& client) const
 {
   return d_getAllCommand(client, d_hash_key)->getValue();
 }
 
-bool RedisHGetLookupAction::getFromCopyCache(GenericCacheInterface<std::string, std::string>& cache, const std::string& key, std::string& value) const
+bool RedisHGetLookupAction::getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const
 {
-  return cache.getValue(key, value);
+  LuaAny ret;
+  cache.getValue(key, ret);
+  if (ret.type() == typeid(std::string)) {
+    value = boost::get<std::string>(ret);
+    return true;
+  }
+  return false;
 }
 
 std::unique_ptr<RedisReplyInterface<std::string>> RedisSismemberLookupAction::getValue(const RedisClient& client, const std::string& key) const
@@ -156,17 +162,17 @@ std::unique_ptr<RedisReplyInterface<bool>> RedisSismemberLookupAction::keyExists
   return d_sIsMemberCommand(client, d_set_key, key);
 }
 
-std::unordered_map<std::string, std::string> RedisSismemberLookupAction::generateCopyCache(const RedisClient& client) const
+std::unordered_map<std::string, LuaAny> RedisSismemberLookupAction::generateCopyCache(const RedisClient& client) const
 {
   auto elements = d_sMembersCommand(client, d_set_key)->getValue();
-  std::unordered_map<std::string, std::string> result{elements.size()};
+  std::unordered_map<std::string, LuaAny> result{elements.size()};
   for (auto element : elements) {
     result.emplace(element, "1");
   }
   return result;
 }
 
-bool RedisSismemberLookupAction::getFromCopyCache(GenericCacheInterface<std::string, std::string>& cache, const std::string& key, std::string& value) const
+bool RedisSismemberLookupAction::getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const
 {
   if (cache.contains(key)) {
     value = "1";
@@ -185,18 +191,18 @@ std::unique_ptr<RedisReplyInterface<bool>> RedisSscanLookupAction::keyExists(con
   return std::make_unique<RedisScanAsBoolReply>(client.executeCommand("SSCAN %b 0 %b", d_set_key.data(), d_set_key.length(), key.data(), key.length()));
 }
 
-std::unordered_map<std::string, std::string> RedisSscanLookupAction::generateCopyCache(const RedisClient& client) const
+std::unordered_map<std::string, LuaAny> RedisSscanLookupAction::generateCopyCache(const RedisClient& client) const
 {
   RedisSetReply reply{client.executeCommand("SMEMBERS %b", d_set_key.data(), d_set_key.length())};
   auto elements = reply.getValue();
-  std::unordered_map<std::string, std::string> result{elements.size()};
+  std::unordered_map<std::string, LuaAny> result{elements.size()};
   for (auto element : elements) {
     result.emplace(element, "1");
   }
   return result;
 }
 
-bool RedisSscanLookupAction::getFromCopyCache(GenericCacheInterface<std::string, std::string>& cache, const std::string& key, std::string& value) const
+bool RedisSscanLookupAction::getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const
 {
   if (cache.contains(key)) {
     value = "1";
@@ -243,12 +249,12 @@ std::unique_ptr<RedisReplyInterface<bool>> RedisRawLookupAction::keyExists(const
   return std::make_unique<RedisRawAsBoolReply>(d_rawCommand(client, args));
 }
 
-std::unordered_map<std::string, std::string> RedisRawLookupAction::generateCopyCache([[maybe_unused]] const RedisClient& client) const
+std::unordered_map<std::string, LuaAny> RedisRawLookupAction::generateCopyCache([[maybe_unused]] const RedisClient& client) const
 {
   return {};
 }
 
-bool RedisRawLookupAction::getFromCopyCache([[maybe_unused]] GenericCacheInterface<std::string, std::string>& cache, [[maybe_unused]] const std::string& key, [[maybe_unused]] std::string& value) const
+bool RedisRawLookupAction::getFromCopyCache([[maybe_unused]] GenericCacheInterface<std::string, LuaAny>& cache, [[maybe_unused]] const std::string& key, [[maybe_unused]] std::string& value) const
 {
   return false;
 }
@@ -409,7 +415,9 @@ RedisClient::PipelineExecutor::~PipelineExecutor()
 
 bool ResultCachingRedisClient::getValue(const std::string& key, std::string& value)
 {
-  if (d_resultCache->getValue(key, value)) {
+  LuaAny ret;
+  if (d_resultCache->getValue(key, ret) && ret.type() == typeid(std::string)) {
+    value = boost::get<std::string>(ret);
     return true;
   }
 
@@ -420,7 +428,7 @@ bool ResultCachingRedisClient::getValue(const std::string& key, std::string& val
   return found;
 }
 
-std::unordered_map<std::string, std::string> ResultCachingRedisClient::generateCopyCache()
+std::unordered_map<std::string, LuaAny> ResultCachingRedisClient::generateCopyCache()
 {
   return d_client->generateCopyCache();
 }
@@ -448,7 +456,7 @@ bool NegativeCachingRedisClient::getValue(const std::string& key, std::string& v
   return found;
 }
 
-std::unordered_map<std::string, std::string> NegativeCachingRedisClient::generateCopyCache()
+std::unordered_map<std::string, LuaAny> NegativeCachingRedisClient::generateCopyCache()
 {
   return d_client->generateCopyCache();
 }
@@ -466,12 +474,14 @@ bool NegativeCachingRedisClient::keyExists(const std::string& key)
   return found;
 }
 
-void CopyCache::insert(const std::string& key, std::string value)
+void CopyCache::insert(const std::string& key, LuaAny value)
 {
   auto map = d_map.write_lock();
   map->emplace(key, value);
   d_stats.d_entriesCount += 1;
-  d_stats.d_memoryUsed += sizeof(key) + sizeof(value) + key.size() + value.size();
+  d_stats.d_memoryUsed += sizeof(key) + sizeof(value) + key.size();
+  // TODO: memory calculation
+  // + value.size();
 };
 
 void CopyCache::insertKey([[maybe_unused]] const std::string& key)
@@ -479,7 +489,7 @@ void CopyCache::insertKey([[maybe_unused]] const std::string& key)
   throw std::runtime_error("Unsupported insertKey operation for copy cache.");
 };
 
-bool CopyCache::getValue(const std::string& key, std::string& value)
+bool CopyCache::getValue(const std::string& key, LuaAny& value)
 {
   if (needsUpdate()) {
     d_stats.d_cacheMisses += 1;
@@ -522,7 +532,9 @@ bool CopyCache::remove(const std::string& key)
   }
 
   d_stats.d_entriesCount -= 1;
-  d_stats.d_memoryUsed -= sizeof(key) + sizeof(mapIt->second) + key.size() + mapIt->second.size();
+  d_stats.d_memoryUsed -= sizeof(key) + sizeof(mapIt->second) + key.size();
+  // TODO: memory calculation
+  // + mapIt->second.size();
 
   map->erase(mapIt);
   return true;
@@ -536,7 +548,7 @@ bool CopyCache::needsUpdate()
   return d_lastInsert + d_ttl < now.tv_sec;
 };
 
-void CopyCache::insertBatch(std::unordered_map<std::string, std::string> batch)
+void CopyCache::insertBatch(std::unordered_map<std::string, LuaAny> batch)
 {
   // TODO: if this turns out slow or blocks too much, try atomic replacement, since whole cache is replaced anyways
   auto map = d_map.write_lock();
@@ -546,7 +558,9 @@ void CopyCache::insertBatch(std::unordered_map<std::string, std::string> batch)
   d_stats.d_memoryUsed = sizeof(*this);
   for (auto entry : batch) {
     map->emplace(entry);
-    d_stats.d_memoryUsed += entry.first.size() + entry.second.size();
+    d_stats.d_memoryUsed += entry.first.size();
+    // TODO: memory calculation
+    // + entry.second.size();
   }
   d_stats.d_entriesCount = batch.size();
   d_stats.d_memoryUsed += batch.size() * 2 * sizeof(std::string);
@@ -591,14 +605,16 @@ size_t CopyCache::expunge([[maybe_unused]] size_t upTo)
   }
 };
 
-[[nodiscard]] const GenericCacheInterface<std::string, std::string>::Stats& CopyCache::getStats() const
+[[nodiscard]] const GenericCacheInterface<std::string, LuaAny>::Stats& CopyCache::getStats() const
 {
   return d_stats;
 };
 
 bool CopyCachingRedisClient::getValue(const std::string& key, std::string& value)
 {
-  if (d_copyCache->getValue(key, value)) {
+  LuaAny ret;
+  if (d_copyCache->getValue(key, ret) && ret.type() == typeid(std::string)) {
+    value = boost::get<std::string>(ret);
     return true;
   }
 
@@ -609,7 +625,7 @@ bool CopyCachingRedisClient::getValue(const std::string& key, std::string& value
   return found;
 }
 
-std::unordered_map<std::string, std::string> CopyCachingRedisClient::generateCopyCache()
+std::unordered_map<std::string, LuaAny> CopyCachingRedisClient::generateCopyCache()
 {
   return d_client->generateCopyCache();
 }
@@ -644,7 +660,7 @@ bool FilteringCopyCachingRedisClient::getValue(const std::string& key, std::stri
   return d_client->getValue(key, value);
 }
 
-std::unordered_map<std::string, std::string> FilteringCopyCachingRedisClient::generateCopyCache()
+std::unordered_map<std::string, LuaAny> FilteringCopyCachingRedisClient::generateCopyCache()
 {
   return d_client->generateCopyCache();
 }
@@ -674,7 +690,7 @@ bool RedisKVClient::getValue(const std::string& key, std::string& value)
   return false;
 }
 
-std::unordered_map<std::string, std::string> RedisKVClient::generateCopyCache()
+std::unordered_map<std::string, LuaAny> RedisKVClient::generateCopyCache()
 {
   d_stats->d_copyCacheRefreshes += 1;
   return d_lookupAction->generateCopyCache(*d_client);

@@ -23,6 +23,7 @@
 #include "dnsdist-kvs.hh"
 #include "dnsdist-lua-types.hh"
 #include "dolog.hh"
+#include "iputils.hh"
 
 #include <memory>
 #include <sys/stat.h>
@@ -293,12 +294,12 @@ bool CDBKVStore::keyExists(const std::string& key)
 
 bool MMDBKVStore::keyExists(const std::string& key)
 {
-  auto addr = ComboAddress(key);
+  auto addr = makeComboAddressFromRaw(key.size() == sizeof(in_addr) ? 4 : 6, key);
   return d_mmdb->exists(addr);
 }
 bool MMDBKVStore::getValue(const std::string& key, std::string& value)
 {
-  auto addr = ComboAddress(key);
+  auto addr = makeComboAddressFromRaw(key.size() == sizeof(in_addr) ? 4 : 6, key);
   LuaAny ret;
   bool result = d_mmdb->query(ret, d_queryParams, addr);
   if (ret.type() == typeid(std::string)) {
@@ -351,12 +352,12 @@ json11::Json MMDBKVStore::parseAny(const LuaAny& any)
 
 #ifdef HAVE_REDIS
 
-RedisKVStore::RedisKVStore(const std::shared_ptr<RedisClient>& redisClient, std::optional<std::string> lookupAction, std::optional<std::string> dataName, std::optional<std::vector<std::string>> rawArgs, std::optional<std::vector<std::string>> rawExistsArgs, bool copyCacheEnabled, unsigned int copyCacheTtl, std::shared_ptr<GenericCacheInterface<std::string, std::string>> resultCache, std::shared_ptr<GenericFilterInterface<std::string>> negativeCache, std::shared_ptr<GenericFilterInterface<std::string>> copyCacheFilter, std::shared_ptr<RedisStats> stats) :
+RedisKVStore::RedisKVStore(const std::shared_ptr<RedisClient>& redisClient, std::optional<std::string> lookupAction, std::optional<std::string> dataName, std::optional<std::vector<std::string>> rawArgs, std::optional<std::vector<std::string>> rawExistsArgs, bool copyCacheEnabled, unsigned int copyCacheTtl, std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> resultCache, std::shared_ptr<GenericFilterInterface<std::string>> negativeCache, std::shared_ptr<GenericFilterInterface<std::string>> copyCacheFilter, std::shared_ptr<RedisStats> stats) :
   d_stats(stats)
 {
   std::unique_ptr<RedisLookupAction> command;
   if (lookupAction && !boost::iequals(lookupAction.value(), "get")) {
-    if (!dataName) {
+    if (!dataName && !boost::iequals(lookupAction.value(), "raw")) {
       throw std::runtime_error("Option 'dataName' is required for lookup action " + lookupAction.value());
     }
     if (boost::iequals(lookupAction.value(), "hget")) {

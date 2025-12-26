@@ -19,6 +19,7 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#include "dnsdist-lua-types.hh"
 #include "dnsdist-lua.hh"
 #include <memory>
 #ifdef HAVE_REDIS
@@ -66,7 +67,7 @@ void setupLuaBindingsRedis([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]]
     auto reply = RedisGetCommand{}(*rc, key);
 
     if (reply->ok()) {
-      result = reply->getValue();
+      result = boost::get<std::string>(reply->getValue());
     }
 
     return result;
@@ -95,7 +96,7 @@ void setupLuaBindingsRedis([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]]
     auto reply = RedisHGetCommand{}(*rc, hash_key, key);
 
     if (reply->ok()) {
-      result = reply->getValue();
+      result = boost::get<std::string>(reply->getValue());
     }
 
     return result;
@@ -115,18 +116,18 @@ void setupLuaBindingsRedis([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]]
     return LuaArray<std::optional<std::string>>();
   });
 
-  luaCtx.registerFunction<LuaAssociativeTable<std::string> (std::shared_ptr<RedisClient>::*)(const std::string&)>("hgetall", [](std::shared_ptr<RedisClient>& rc, const std::string& hash_key) {
+  luaCtx.registerFunction<LuaAssociativeTable<LuaAny> (std::shared_ptr<RedisClient>::*)(const std::string&)>("hgetall", [](std::shared_ptr<RedisClient>& rc, const std::string& hash_key) {
     if (!rc) {
-      return LuaAssociativeTable<std::string>();
+      return LuaAssociativeTable<LuaAny>();
     }
 
     auto reply = RedisHGetAllCommand{}(*rc, hash_key);
 
     if (reply->ok()) {
-      return reply->getValue();
+      return boost::get<LuaAssociativeTable<LuaAny>>(reply->getValue());
     }
 
-    return LuaAssociativeTable<std::string>();
+    return LuaAssociativeTable<LuaAny>();
   });
 
   luaCtx.registerFunction<bool (std::shared_ptr<RedisClient>::*)(const std::string&, const std::string&)>("hexists", [](std::shared_ptr<RedisClient>& rc, const std::string& hash_key, const std::string& key) {

@@ -257,7 +257,7 @@ private:
 class RedisKVStore : public KeyValueStore
 {
 public:
-  RedisKVStore(const std::shared_ptr<RedisClient>& redisClient, std::optional<std::string> lookupAction, std::optional<std::string> dataName, std::optional<std::vector<std::string>> rawArgs, std::optional<std::vector<std::string>> rawExistsArgs, bool copyCacheEnabled, unsigned int copyCacheTtl, std::shared_ptr<GenericCacheInterface<std::string, std::string>> resultCache, std::shared_ptr<GenericFilterInterface<std::string>> negativeCache, std::shared_ptr<GenericFilterInterface<std::string>> copyCacheFilter, std::shared_ptr<RedisStats> stats);
+  RedisKVStore(const std::shared_ptr<RedisClient>& redisClient, std::optional<std::string> lookupAction, std::optional<std::string> dataName, std::optional<std::vector<std::string>> rawArgs, std::optional<std::vector<std::string>> rawExistsArgs, bool copyCacheEnabled, unsigned int copyCacheTtl, std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> resultCache, std::shared_ptr<GenericFilterInterface<std::string>> negativeCache, std::shared_ptr<GenericFilterInterface<std::string>> copyCacheFilter, std::shared_ptr<RedisStats> stats);
 
   bool keyExists(const std::string& key) override;
   bool getValue(const std::string& key, std::string& value) override;

@@ -239,7 +239,7 @@ static bool doOneCarbonExport(const Carbon::Endpoint& endpoint)
       base += ".caches.";
       base += cacheName;
       base += ".";
-      const std::shared_ptr<GenericCacheInterface<std::string, std::optional<LuaAny>>> cache = entry.second;
+      const std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> cache = entry.second;
       const auto& stats = cache->getStats();
       str << base << "memory-used"
           << " " << stats.d_memoryUsed << " " << now << "\r\n";
