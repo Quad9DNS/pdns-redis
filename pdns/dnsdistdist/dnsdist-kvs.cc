@@ -57,8 +57,8 @@ static json11::Json parseAny(const LuaAny& any)
   else if (any.type() == typeid(LuaAssociativeTable<LuaAny>)) {
     auto luaTable = boost::get<LuaAssociativeTable<LuaAny>>(any);
     std::unordered_map<std::string, json11::Json> map(luaTable.size());
-    for (auto& kv : map) {
-      map.emplace(kv.first, kv.second);
+    for (auto& kv : luaTable) {
+      map.emplace(kv.first, parseAny(kv.second));
     }
     return json11::Json(map);
   }
