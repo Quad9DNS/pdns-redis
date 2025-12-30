@@ -41,15 +41,6 @@
       description: "The path to a file containing the code of the Lua function that will alter the message"
 - name: "drop"
   description: "Drop the packet"
-- name: "SetEDNSOption"
-  description: "Add arbitrary EDNS option and data to the query. Any existing EDNS content with the same option code will be overwritten. Subsequent rules are processed after this action"
-  parameters:
-    - name: "code"
-      type: "u32"
-      description: "The EDNS option number"
-    - name: "data"
-      type: "String"
-      description: "The EDNS0 option raw content"
 - name: "ERCode"
   description: "Reply immediately by turning the query into a response with the specified EDNS extended rcode"
   skip-cpp: true
@@ -348,6 +339,15 @@ are processed after this action"
     - name: "ipv6"
       type: "u16"
       description: "The IPv6 netmask length"
+- name: "SetEDNSOption"
+  description: "Add arbitrary EDNS option and data to the query. Any existing EDNS content with the same option code will be overwritten. Subsequent rules are processed after this action"
+  parameters:
+    - name: "code"
+      type: "u32"
+      description: "The EDNS option number"
+    - name: "data"
+      type: "String"
+      description: "The EDNS0 option raw content"
 - name: "SetExtendedDNSError"
   description: "Set an Extended DNS Error status that will be added to the response corresponding to the current query. Subsequent rules are processed after this action"
   parameters:
@@ -359,6 +359,11 @@ are processed after this action"
       default: ""
       optional: false
       description: "The optional EDNS Extended DNS Error extra text"
+    - name: "clear_existing_entries"
+      type: "bool"
+      default: "true"
+      optional: true
+      description: "Whether to clear existing EDNS Extended DNS Error codes"
 - name: "SetMacAddr"
   description: "Add the source MAC address to the query as an EDNS0 option. This action is currently only supported on Linux. Subsequent rules are processed after this action"
   parameters:
