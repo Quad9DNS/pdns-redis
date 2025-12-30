@@ -29,6 +29,45 @@
 #include <sys/stat.h>
 #include <boost/variant.hpp>
 
+#if defined(HAVE_MMDB) || defined(HAVE_REDIS)
+#include "ext/json11/json11.hpp"
+
+static json11::Json parseAny(const LuaAny& any)
+{
+  if (any.type() == typeid(std::string)) {
+    return json11::Json(boost::get<std::string>(any));
+  }
+  else if (any.type() == typeid(int)) {
+    return json11::Json(boost::get<int>(any));
+  }
+  else if (any.type() == typeid(double)) {
+    return json11::Json(boost::get<double>(any));
+  }
+  else if (any.type() == typeid(bool)) {
+    return json11::Json(boost::get<bool>(any));
+  }
+  else if (any.type() == typeid(LuaArray<LuaAny>)) {
+    auto luaArray = boost::get<LuaArray<LuaAny>>(any);
+    std::vector<json11::Json> array{};
+    for (auto& kv : luaArray) {
+      array.emplace_back(parseAny(kv.second));
+    }
+    return json11::Json(array);
+  }
+  else if (any.type() == typeid(LuaAssociativeTable<LuaAny>)) {
+    auto luaTable = boost::get<LuaAssociativeTable<LuaAny>>(any);
+    std::unordered_map<std::string, json11::Json> map(luaTable.size());
+    for (auto& kv : map) {
+      map.emplace(kv.first, kv.second);
+    }
+    return json11::Json(map);
+  }
+  else {
+    return json11::Json();
+  }
+}
+#endif // HAVE_MMDB || HAVE_REDIS
+
 std::vector<std::string> KeyValueLookupKeySourceIP::getKeys(const ComboAddress& addr)
 {
   std::vector<std::string> result;
@@ -290,8 +329,6 @@ bool CDBKVStore::keyExists(const std::string& key)
 
 #ifdef HAVE_MMDB
 
-#include "ext/json11/json11.hpp"
-
 bool MMDBKVStore::keyExists(const std::string& key)
 {
   auto addr = makeComboAddressFromRaw(key.size() == sizeof(in_addr) ? 4 : 6, key);
@@ -307,45 +344,10 @@ bool MMDBKVStore::getValue(const std::string& key, std::string& value)
     return result;
   }
 
-  json11::Json json = this->parseAny(ret);
+  json11::Json json = parseAny(ret);
   json.dump(value);
 
   return result;
-}
-
-json11::Json MMDBKVStore::parseAny(const LuaAny& any)
-{
-  if (any.type() == typeid(std::string)) {
-    return json11::Json(boost::get<std::string>(any));
-  }
-  else if (any.type() == typeid(int)) {
-    return json11::Json(boost::get<int>(any));
-  }
-  else if (any.type() == typeid(double)) {
-    return json11::Json(boost::get<double>(any));
-  }
-  else if (any.type() == typeid(bool)) {
-    return json11::Json(boost::get<bool>(any));
-  }
-  else if (any.type() == typeid(LuaArray<LuaAny>)) {
-    auto luaArray = boost::get<LuaArray<LuaAny>>(any);
-    std::vector<json11::Json> array(luaArray.size());
-    for (auto& kv : luaArray) {
-      array.emplace_back(parseAny(kv.second));
-    }
-    return json11::Json(array);
-  }
-  else if (any.type() == typeid(LuaAssociativeTable<LuaAny>)) {
-    auto luaTable = boost::get<LuaAssociativeTable<LuaAny>>(any);
-    std::unordered_map<std::string, json11::Json> map(luaTable.size());
-    for (auto& kv : map) {
-      map.emplace(kv.first, kv.second);
-    }
-    return json11::Json(map);
-  }
-  else {
-    return json11::Json();
-  }
 }
 
 #endif // HAVE_MMDB
@@ -411,8 +413,17 @@ bool RedisKVStore::reload()
 
 bool RedisKVStore::getValue(const std::string& key, std::string& value)
 {
-  auto result = d_redis->getValue(key, value);
+  LuaAny ret;
+  auto result = d_redis->getValue(key, ret);
   if (result) {
+    if (ret.type() == typeid(std::string)) {
+      value = boost::get<std::string>(ret);
+    }
+    else {
+      json11::Json json = parseAny(ret);
+      json.dump(value);
+    }
+
     d_stats->d_successfulLookups += 1;
   }
   else {

@@ -85,7 +85,8 @@ void setupLuaBindingsKVS([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] b
 
     if (rawArgsInput) {
       auto rawInput = rawArgsInput.value();
-      rawArgs = std::vector<std::string>(rawArgsInput.value().size());
+      rawArgs = std::vector<std::string>();
+      rawArgs->reserve(rawInput.size());
       for (const auto& value : rawInput) {
         rawArgs->emplace_back(value.second);
       }
@@ -93,7 +94,8 @@ void setupLuaBindingsKVS([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]] b
 
     if (rawExistsArgsInput) {
       auto rawInput = rawExistsArgsInput.value();
-      rawExistsArgs = std::vector<std::string>(rawExistsArgsInput.value().size());
+      rawExistsArgs = std::vector<std::string>();
+      rawExistsArgs->reserve(rawInput.size());
       for (const auto& value : rawInput) {
         rawExistsArgs->emplace_back(value.second);
       }

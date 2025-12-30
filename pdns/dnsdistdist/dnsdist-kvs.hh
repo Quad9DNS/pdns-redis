@@ -243,8 +243,6 @@ public:
   }
 
 private:
-  json11::Json parseAny(const LuaAny& any);
-
   std::shared_ptr<MMDB> d_mmdb;
   LuaTypeOrArrayOf<std::string> d_queryParams;
 };

@@ -106,9 +106,9 @@ std::unique_ptr<RedisReplyInterface<LuaAny>> RedisRawCommand::operator()(const R
   return std::make_unique<RedisRawReply>(client.executeCommandArgv(command));
 }
 
-std::unique_ptr<RedisReplyInterface<std::string>> RedisGetLookupAction::getValue(const RedisClient& client, const std::string& key) const
+std::unique_ptr<RedisReplyInterface<LuaAny>> RedisGetLookupAction::getValue(const RedisClient& client, const std::string& key) const
 {
-  return d_getCommand(client, d_prefix + key);
+  return std::make_unique<DefaultMappedRedisReply<std::string, LuaAny>>(d_getCommand(client, d_prefix + key));
 }
 
 std::unique_ptr<RedisReplyInterface<bool>> RedisGetLookupAction::keyExists(const RedisClient& client, const std::string& key) const
@@ -126,9 +126,9 @@ bool RedisGetLookupAction::getFromCopyCache([[maybe_unused]] GenericCacheInterfa
   return false;
 }
 
-std::unique_ptr<RedisReplyInterface<std::string>> RedisHGetLookupAction::getValue(const RedisClient& client, const std::string& key) const
+std::unique_ptr<RedisReplyInterface<LuaAny>> RedisHGetLookupAction::getValue(const RedisClient& client, const std::string& key) const
 {
-  return d_getCommand(client, d_hash_key, key);
+  return std::make_unique<DefaultMappedRedisReply<std::string, LuaAny>>(d_getCommand(client, d_hash_key, key));
 }
 
 std::unique_ptr<RedisReplyInterface<bool>> RedisHGetLookupAction::keyExists(const RedisClient& client, const std::string& key) const
@@ -152,9 +152,9 @@ bool RedisHGetLookupAction::getFromCopyCache(GenericCacheInterface<std::string, 
   return false;
 }
 
-std::unique_ptr<RedisReplyInterface<std::string>> RedisSismemberLookupAction::getValue(const RedisClient& client, const std::string& key) const
+std::unique_ptr<RedisReplyInterface<LuaAny>> RedisSismemberLookupAction::getValue(const RedisClient& client, const std::string& key) const
 {
-  return std::make_unique<RedisBoolAsStringReply>(d_sIsMemberCommand(client, d_set_key, key));
+  return std::make_unique<DefaultMappedRedisReply<std::string, LuaAny>>(std::make_unique<RedisBoolAsStringReply>(d_sIsMemberCommand(client, d_set_key, key)));
 }
 
 std::unique_ptr<RedisReplyInterface<bool>> RedisSismemberLookupAction::keyExists(const RedisClient& client, const std::string& key) const
@@ -181,9 +181,9 @@ bool RedisSismemberLookupAction::getFromCopyCache(GenericCacheInterface<std::str
   return false;
 }
 
-std::unique_ptr<RedisReplyInterface<std::string>> RedisSscanLookupAction::getValue(const RedisClient& client, const std::string& key) const
+std::unique_ptr<RedisReplyInterface<LuaAny>> RedisSscanLookupAction::getValue(const RedisClient& client, const std::string& key) const
 {
-  return std::make_unique<RedisScanAsStringReply>(client.executeCommand("SSCAN %b 0 %b", d_set_key.data(), d_set_key.length(), key.data(), key.length()));
+  return std::make_unique<DefaultMappedRedisReply<std::string, LuaAny>>(std::make_unique<RedisScanAsStringReply>(client.executeCommand("SSCAN %b 0 %b", d_set_key.data(), d_set_key.length(), key.data(), key.length())));
 }
 
 std::unique_ptr<RedisReplyInterface<bool>> RedisSscanLookupAction::keyExists(const RedisClient& client, const std::string& key) const
@@ -211,7 +211,7 @@ bool RedisSscanLookupAction::getFromCopyCache(GenericCacheInterface<std::string,
   return false;
 }
 
-std::unique_ptr<RedisReplyInterface<std::string>> RedisRawLookupAction::getValue(const RedisClient& client, const std::string& key) const
+std::unique_ptr<RedisReplyInterface<LuaAny>> RedisRawLookupAction::getValue(const RedisClient& client, const std::string& key) const
 {
   LuaArray<std::string> args(std::max(d_keyArgPos + 1, d_args.size()));
   for (size_t i = 0; i < d_args.size(); ++i) {
@@ -227,7 +227,7 @@ std::unique_ptr<RedisReplyInterface<std::string>> RedisRawLookupAction::getValue
   if (d_keyArgPos >= d_args.size()) {
     args[d_keyArgPos] = {d_keyArgPos + 1, key};
   }
-  return std::make_unique<RedisRawAsStringReply>(d_rawCommand(client, args));
+  return d_rawCommand(client, args);
 }
 
 std::unique_ptr<RedisReplyInterface<bool>> RedisRawLookupAction::keyExists(const RedisClient& client, const std::string& key) const
@@ -413,11 +413,11 @@ RedisClient::PipelineExecutor::~PipelineExecutor()
   d_thread.join();
 }
 
-bool ResultCachingRedisClient::getValue(const std::string& key, std::string& value)
+bool ResultCachingRedisClient::getValue(const std::string& key, LuaAny& value)
 {
   LuaAny ret;
-  if (d_resultCache->getValue(key, ret) && ret.type() == typeid(std::string)) {
-    value = boost::get<std::string>(ret);
+  if (d_resultCache->getValue(key, ret)) {
+    value = ret;
     return true;
   }
 
@@ -443,7 +443,7 @@ bool ResultCachingRedisClient::keyExists(const std::string& key)
   return d_client->keyExists(key);
 }
 
-bool NegativeCachingRedisClient::getValue(const std::string& key, std::string& value)
+bool NegativeCachingRedisClient::getValue(const std::string& key, LuaAny& value)
 {
   if (d_negativeCache->contains(key)) {
     return false;
@@ -610,11 +610,11 @@ size_t CopyCache::expunge([[maybe_unused]] size_t upTo)
   return d_stats;
 };
 
-bool CopyCachingRedisClient::getValue(const std::string& key, std::string& value)
+bool CopyCachingRedisClient::getValue(const std::string& key, LuaAny& value)
 {
   LuaAny ret;
-  if (d_copyCache->getValue(key, ret) && ret.type() == typeid(std::string)) {
-    value = boost::get<std::string>(ret);
+  if (d_copyCache->getValue(key, ret)) {
+    value = ret;
     return true;
   }
 
@@ -640,7 +640,7 @@ bool CopyCachingRedisClient::keyExists(const std::string& key)
   return d_client->keyExists(key);
 }
 
-bool FilteringCopyCachingRedisClient::getValue(const std::string& key, std::string& value)
+bool FilteringCopyCachingRedisClient::getValue(const std::string& key, LuaAny& value)
 {
   struct timespec now;
   gettime(&now);
@@ -675,7 +675,7 @@ bool FilteringCopyCachingRedisClient::keyExists(const std::string& key)
   return d_client->keyExists(key);
 }
 
-bool RedisKVClient::getValue(const std::string& key, std::string& value)
+bool RedisKVClient::getValue(const std::string& key, LuaAny& value)
 {
   auto reply = d_lookupAction->getValue(*d_client, key);
 

@@ -27,6 +27,7 @@
 #include "channel.hh"
 #include "ext/json11/json11.hpp"
 #include "lock.hh"
+#include <numeric>
 #include <thread>
 #include <yahttp/yahttp.hpp>
 #include <hiredis/hiredis.h>
@@ -63,7 +64,7 @@ public:
 
   virtual bool ok() const override
   {
-    return d_reply;
+    return d_reply && d_reply->type != REDIS_REPLY_ERROR;
   }
 
   virtual std::string getError() const override
@@ -103,6 +104,19 @@ protected:
   std::unique_ptr<RedisReplyInterface<S>> d_inner;
 };
 
+template <typename S, typename T>
+class DefaultMappedRedisReply : public MappedRedisReply<S, T>
+{
+public:
+  DefaultMappedRedisReply(std::unique_ptr<RedisReplyInterface<S>> inner) :
+    MappedRedisReply<S, T>(std::move(inner)) {};
+
+  T getValue() const override
+  {
+    return T(this->d_inner->getValue());
+  }
+};
+
 class RedisStringReply : public RedisReply<std::string>
 {
 public:
@@ -112,7 +126,7 @@ public:
   }
   bool ok() const override
   {
-    return d_reply && (d_reply->str);
+    return RedisReply::ok() && (d_reply->str);
   }
   std::string getValue() const override
   {
@@ -258,7 +272,8 @@ public:
   }
   std::vector<std::pair<int, std::optional<std::string>>> getValue() const override
   {
-    std::vector<std::pair<int, std::optional<std::string>>> result{d_reply->elements};
+    std::vector<std::pair<int, std::optional<std::string>>> result;
+    result.reserve(d_reply->elements);
     for (size_t i = 0; i < d_reply->elements; i++) {
       if (d_reply->element[i]->type == REDIS_REPLY_NIL) {
         result.emplace_back(i + 1, std::nullopt);
@@ -299,10 +314,6 @@ public:
   RedisRawReply(redisReply* reply) :
     RedisReply(reply)
   {
-  }
-  bool ok() const override
-  {
-    return d_reply;
   }
   LuaAny getValue() const override
   {
@@ -424,7 +435,8 @@ private:
     }
     else if (any.type() == typeid(LuaArray<LuaAny>)) {
       auto luaArray = boost::get<LuaArray<LuaAny>>(any);
-      std::vector<json11::Json> array(luaArray.size());
+      std::vector<json11::Json> array;
+      array.reserve(luaArray.size());
       for (auto& kv : luaArray) {
         array.emplace_back(parseAny(kv.second));
       }
@@ -518,7 +530,7 @@ public:
     return d_cacheId;
   }
   virtual bool getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const = 0;
-  virtual std::unique_ptr<RedisReplyInterface<std::string>> getValue(const RedisClient& client, const std::string& key) const = 0;
+  virtual std::unique_ptr<RedisReplyInterface<LuaAny>> getValue(const RedisClient& client, const std::string& key) const = 0;
   // TODO: Error handling for copy cache!
   virtual std::unordered_map<std::string, LuaAny> generateCopyCache(const RedisClient& client) const = 0;
   virtual std::unique_ptr<RedisReplyInterface<bool>> keyExists(const RedisClient& client, const std::string& key) const = 0;
@@ -535,7 +547,7 @@ public:
   {
   }
   bool getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const override;
-  std::unique_ptr<RedisReplyInterface<std::string>> getValue(const RedisClient& client, const std::string& key) const override;
+  std::unique_ptr<RedisReplyInterface<LuaAny>> getValue(const RedisClient& client, const std::string& key) const override;
   std::unordered_map<std::string, LuaAny> generateCopyCache(const RedisClient& client) const override;
   std::unique_ptr<RedisReplyInterface<bool>> keyExists(const RedisClient& client, const std::string& key) const override;
 
@@ -553,7 +565,7 @@ public:
   {
   }
   bool getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const override;
-  std::unique_ptr<RedisReplyInterface<std::string>> getValue(const RedisClient& client, const std::string& key) const override;
+  std::unique_ptr<RedisReplyInterface<LuaAny>> getValue(const RedisClient& client, const std::string& key) const override;
   std::unordered_map<std::string, LuaAny> generateCopyCache(const RedisClient& client) const override;
   std::unique_ptr<RedisReplyInterface<bool>> keyExists(const RedisClient& client, const std::string& key) const override;
 
@@ -572,7 +584,7 @@ public:
   {
   }
   bool getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const override;
-  std::unique_ptr<RedisReplyInterface<std::string>> getValue(const RedisClient& client, const std::string& key) const override;
+  std::unique_ptr<RedisReplyInterface<LuaAny>> getValue(const RedisClient& client, const std::string& key) const override;
   std::unordered_map<std::string, LuaAny> generateCopyCache(const RedisClient& client) const override;
   std::unique_ptr<RedisReplyInterface<bool>> keyExists(const RedisClient& client, const std::string& key) const override;
 
@@ -590,7 +602,7 @@ public:
   {
   }
   bool getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const override;
-  std::unique_ptr<RedisReplyInterface<std::string>> getValue(const RedisClient& client, const std::string& key) const override;
+  std::unique_ptr<RedisReplyInterface<LuaAny>> getValue(const RedisClient& client, const std::string& key) const override;
   std::unordered_map<std::string, LuaAny> generateCopyCache(const RedisClient& client) const override;
   std::unique_ptr<RedisReplyInterface<bool>> keyExists(const RedisClient& client, const std::string& key) const override;
 
@@ -603,11 +615,11 @@ class RedisRawLookupAction : public RedisLookupAction
 {
 public:
   RedisRawLookupAction(const std::vector<std::string>& args, const std::optional<std::vector<std::string>>& existsArgs = std::nullopt) :
-    RedisLookupAction("RAW" + std::accumulate(args.begin(), args.end(), std::string(), [](const std::string& acc, const std::string& arg) { return acc + (acc.empty() ? std::string() : ",") + arg; })), d_args(args), d_existsArgs(existsArgs.value_or(d_args)), d_keyArgPos(find(args.begin(), args.end(), "{}") - args.begin()), d_keyArgPosInString(d_keyArgPos < d_args.size() ? args[d_keyArgPos].find("{}") : 0), d_keyArgPosInExists(existsArgs ? find(existsArgs.value().begin(), existsArgs.value().end(), "{}") - existsArgs.value().begin() : d_keyArgPos), d_keyArgPosInExistsInString(d_keyArgPosInExists < d_existsArgs.size() ? d_existsArgs[d_keyArgPosInExists].find("{}") : 0)
+    RedisLookupAction("RAW" + std::accumulate(args.begin(), args.end(), std::string(), [](const std::string& acc, const std::string& arg) { return acc + (acc.empty() ? std::string() : ",") + arg; })), d_args(args), d_existsArgs(existsArgs.value_or(d_args)), d_keyArgPos(find_if(args.begin(), args.end(), [](const std::string& arg) { return arg.find("{}") != std::string::npos; }) - args.begin()), d_keyArgPosInString(d_keyArgPos < d_args.size() ? args[d_keyArgPos].find("{}") : 0), d_keyArgPosInExists(existsArgs ? find_if(existsArgs.value().begin(), existsArgs.value().end(), [](const std::string& arg) { return arg.find("{}") != std::string::npos; }) - existsArgs.value().begin() : d_keyArgPos), d_keyArgPosInExistsInString(d_keyArgPosInExists < d_existsArgs.size() ? d_existsArgs[d_keyArgPosInExists].find("{}") : 0)
   {
   }
   bool getFromCopyCache(GenericCacheInterface<std::string, LuaAny>& cache, const std::string& key, std::string& value) const override;
-  std::unique_ptr<RedisReplyInterface<std::string>> getValue(const RedisClient& client, const std::string& key) const override;
+  std::unique_ptr<RedisReplyInterface<LuaAny>> getValue(const RedisClient& client, const std::string& key) const override;
   std::unordered_map<std::string, LuaAny> generateCopyCache(const RedisClient& client) const override;
   std::unique_ptr<RedisReplyInterface<bool>> keyExists(const RedisClient& client, const std::string& key) const override;
 
@@ -737,7 +749,7 @@ class RedisKVClientInterface
 {
 public:
   virtual ~RedisKVClientInterface() = default;
-  virtual bool getValue(const std::string& key, std::string& value) = 0;
+  virtual bool getValue(const std::string& key, LuaAny& value) = 0;
   virtual std::unordered_map<std::string, LuaAny> generateCopyCache() = 0;
   virtual bool keyExists(const std::string& key) = 0;
 };
@@ -750,7 +762,7 @@ public:
   {
   }
 
-  bool getValue(const std::string& key, std::string& value) override;
+  bool getValue(const std::string& key, LuaAny& value) override;
   std::unordered_map<std::string, LuaAny> generateCopyCache() override;
   bool keyExists(const std::string& key) override;
 
@@ -767,7 +779,7 @@ public:
   {
   }
 
-  bool getValue(const std::string& key, std::string& value) override;
+  bool getValue(const std::string& key, LuaAny& value) override;
   std::unordered_map<std::string, LuaAny> generateCopyCache() override;
   bool keyExists(const std::string& key) override;
 
@@ -813,7 +825,7 @@ public:
     d_copyCache = std::make_shared<CopyCache>(cacheTtl);
   }
 
-  bool getValue(const std::string& key, std::string& value) override;
+  bool getValue(const std::string& key, LuaAny& value) override;
   std::unordered_map<std::string, LuaAny> generateCopyCache() override;
   bool keyExists(const std::string& key) override;
 
@@ -830,7 +842,7 @@ public:
   {
   }
 
-  bool getValue(const std::string& key, std::string& value) override;
+  bool getValue(const std::string& key, LuaAny& value) override;
   std::unordered_map<std::string, LuaAny> generateCopyCache() override;
   bool keyExists(const std::string& key) override;
 
@@ -851,7 +863,7 @@ public:
   {
   }
 
-  bool getValue(const std::string& key, std::string& value) override;
+  bool getValue(const std::string& key, LuaAny& value) override;
   std::unordered_map<std::string, LuaAny> generateCopyCache() override;
   bool keyExists(const std::string& key) override;
 

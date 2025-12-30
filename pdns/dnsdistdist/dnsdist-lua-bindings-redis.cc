@@ -153,7 +153,8 @@ void setupLuaBindingsRedis([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]]
 
     if (reply->ok()) {
       auto members = reply->getValue();
-      LuaArray<std::string> result{members.size()};
+      LuaArray<std::string> result;
+      result.reserve(members.size());
       for (const auto& member : members) {
         result.emplace_back(result.size() + 1, member);
       }
@@ -200,7 +201,8 @@ void setupLuaBindingsRedis([[maybe_unused]] LuaContext& luaCtx, [[maybe_unused]]
 
     if (reply->ok()) {
       auto members = reply->getValue();
-      LuaArray<std::string> result{members.size()};
+      LuaArray<std::string> result{};
+      result.reserve(members.size());
       for (const auto& member : members) {
         result.emplace_back(result.size() + 1, member);
       }
