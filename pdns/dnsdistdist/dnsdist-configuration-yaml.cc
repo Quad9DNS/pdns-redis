@@ -23,6 +23,7 @@
 #include <stdexcept>
 
 #include "dnsdist-configuration-yaml.hh"
+#include "dnsdist-lua-types.hh"
 
 #if defined(HAVE_YAML_CONFIGURATION)
 #include "base64.hh"
@@ -409,6 +410,16 @@ static bool handleTLSConfiguration(const dnsdist::rust::settings::BindConfigurat
   }
 
   return true;
+}
+
+static std::vector<std::string> convertVecString(const ::rust::Vec<::rust::String>& stringVec)
+{
+  std::vector<std::string> strings;
+  strings.reserve(stringVec.size());
+  for (const auto& str : stringVec) {
+    strings.emplace_back(str);
+  }
+  return strings;
 }
 
 static std::shared_ptr<DownstreamState> createBackendFromConfiguration(const dnsdist::rust::settings::BackendConfiguration& config, bool configCheck)
@@ -1852,16 +1863,16 @@ void registerKVSObjects([[maybe_unused]] const KeyValueStoresConfiguration& conf
   for (const auto& redis : config.redis) {
     if (createObjects) {
       auto client = std::make_shared<RedisClient>(std::string(redis.url), redis.pipeline_enabled, redis.pipeline_interval);
-      std::shared_ptr<GenericCacheInterface<std::string, std::string>> resultCache;
-      std::shared_ptr<GenericCacheInterface<std::string, std::string>> negativeCache;
-      std::shared_ptr<GenericCacheInterface<std::string, std::string>> copyCacheFilter;
+      std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> resultCache;
+      std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> negativeCache;
+      std::shared_ptr<GenericCacheInterface<std::string, LuaAny>> copyCacheFilter;
       if (redis.result_cache_enabled) {
-        resultCache = std::make_shared<GenericCache<std::string, std::string>>(GenericCache<std::string, std::string>::CacheSettings{.d_ttlEnabled = false, .d_ttl = 0, .d_lruEnabled = false});
+        resultCache = std::make_shared<GenericCache<std::string, LuaAny>>(GenericCache<std::string, LuaAny>::CacheSettings{.d_ttlEnabled = false, .d_ttl = 0, .d_lruEnabled = false});
       }
       if (redis.negative_cache_enabled) {
-        negativeCache = std::make_shared<GenericCache<std::string, std::string>>(GenericCache<std::string, std::string>::CacheSettings{.d_ttlEnabled = false, .d_ttl = 0, .d_lruEnabled = false});
+        negativeCache = std::make_shared<GenericCache<std::string, LuaAny>>(GenericCache<std::string, LuaAny>::CacheSettings{.d_ttlEnabled = false, .d_ttl = 0, .d_lruEnabled = false});
       }
-      auto store = std::shared_ptr<KeyValueStore>(std::make_shared<RedisKVStore>(client, std::optional<std::string>(redis.lookup_action), std::optional<std::string>(redis.data_name), redis.copy_cache_enabled, redis.copy_cache_ttl, resultCache, negativeCache, copyCacheFilter, std::make_shared<RedisStats>()));
+      auto store = std::shared_ptr<KeyValueStore>(std::make_shared<RedisKVStore>(client, std::optional<std::string>(redis.lookup_action), std::optional<std::string>(redis.data_name), std::optional<std::vector<std::string>>(dnsdist::configuration::yaml::convertVecString(redis.raw_args)), std::optional<std::vector<std::string>>(dnsdist::configuration::yaml::convertVecString(redis.raw_exists_args)), redis.copy_cache_enabled, redis.copy_cache_ttl, resultCache, negativeCache, copyCacheFilter, std::make_shared<RedisStats>()));
       dnsdist::configuration::yaml::registerType<KeyValueStore>(store, redis.name);
     }
     else {
