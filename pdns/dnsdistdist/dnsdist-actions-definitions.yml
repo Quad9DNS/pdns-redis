@@ -41,15 +41,6 @@
       description: "The path to a file containing the code of the Lua function that will alter the message"
 - name: "drop"
   description: "Drop the packet"
-- name: "SetEDNSOption"
-  description: "Add arbitrary EDNS option and data to the query. Any existing EDNS content with the same option code will be overwritten. Subsequent rules are processed after this action"
-  parameters:
-    - name: "code"
-      type: "u32"
-      description: "The EDNS option number"
-    - name: "data"
-      type: "String"
-      description: "The EDNS0 option raw content"
 - name: "ERCode"
   description: "Reply immediately by turning the query into a response with the specified EDNS extended rcode"
   skip-cpp: true
@@ -348,6 +339,15 @@ are processed after this action"
     - name: "ipv6"
       type: "u16"
       description: "The IPv6 netmask length"
+- name: "SetEDNSOption"
+  description: "Add arbitrary EDNS option and data to the query. Any existing EDNS content with the same option code will be overwritten. Subsequent rules are processed after this action"
+  parameters:
+    - name: "code"
+      type: "u32"
+      description: "The EDNS option number"
+    - name: "data"
+      type: "String"
+      description: "The EDNS0 option raw content"
 - name: "SetExtendedDNSError"
   description: "Set an Extended DNS Error status that will be added to the response corresponding to the current query. Subsequent rules are processed after this action"
   parameters:
@@ -359,6 +359,11 @@ are processed after this action"
       default: ""
       optional: false
       description: "The optional EDNS Extended DNS Error extra text"
+    - name: "clear_existing_entries"
+      type: "bool"
+      default: "true"
+      optional: true
+      description: "Whether to clear existing EDNS Extended DNS Error codes"
 - name: "SetMacAddr"
   description: "Add the source MAC address to the query as an EDNS0 option. This action is currently only supported on Linux. Subsequent rules are processed after this action"
   parameters:
@@ -402,10 +407,18 @@ are processed after this action"
       description: "The TTL to use"
 - name: "SetTrace"
   description: "Enable or disable OpenTelemetry tracing for this query. Don't forget to also use a RemoteLog action to actually send the trace. Subsequent rules are processed after this action"
+  skip-cpp: true
+  skip-rust: true
   parameters:
     - name: "value"
       type: "bool"
       description: "Whether or not to enable tracing"
+    - name: remote_loggers
+      type: "Vec<String>"
+      default: ""
+      description: |
+        The names of all the loggers that should be sent the protobuf messages that includes the tracing information.
+        This message will be sent once dnsdist is finished with the DNS transaction (i.e. the response has been sent, the query was dropped, or when a timeout occured).
     - name: "use_incoming_traceid"
       type: "bool"
       default: "false"
@@ -414,6 +427,10 @@ are processed after this action"
       type: "u16"
       default: 65500
       description: "The EDNS Option code to take the Trace ID from"
+    - name: "strip_incoming_traceid"
+      type: "bool"
+      default: "false"
+      description: "Remove any existing TRACEPARENT EDNS option from the query. When use_incoming_traceid is set to true, the ID will be picked set before removing the option"
 - name: "SNMPTrap"
   description: "Send an SNMP trap, adding the message string as the query description. Subsequent rules are processed after this action"
   parameters:
