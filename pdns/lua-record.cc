@@ -641,6 +641,8 @@ static vector<ComboAddress> useSelector(const std::string &selector, const Combo
 
   if(selector=="all")
     return candidates;
+  else if(selector=="empty")
+    return ret;
   else if(selector=="random")
     ret.emplace_back(pickRandom<ComboAddress>(candidates));
   else if(selector=="pickclosest")
@@ -985,8 +987,6 @@ static string lua_createReverse(const string &format, boost::optional<opts_t> ex
       return {"unknown"};
     }
 
-    vector<ComboAddress> candidates;
-
     // so, query comes in for 4.3.2.1.in-addr.arpa, zone is called 2.1.in-addr.arpa
     // exceptions["1.2.3.4"]="bert.powerdns.com" then provides an exception
     if (exceptions) {
@@ -1014,7 +1014,10 @@ static string lua_createReverse(const string &format, boost::optional<opts_t> ex
     return fmt.str();
   }
   catch(std::exception& ex) {
-    g_log<<Logger::Error<<"error: "<<ex.what()<<endl;
+    g_log<<Logger::Error<<"createReverse error: "<<ex.what()<<endl;
+  }
+  catch (const PDNSException &e) {
+    g_log<<Logger::Error<<"createReverse error: "<<e.reason<<endl;
   }
   return {"error"};
 }
@@ -1139,8 +1142,6 @@ static string lua_createForward6()
 
 static string lua_createReverse6(const string &format, boost::optional<opts_t> exceptions)
 {
-  vector<ComboAddress> candidates;
-
   try {
     auto labels= s_lua_record_ctx->qname.getRawLabels();
     if (labels.size()<32) {
@@ -1200,12 +1201,12 @@ static string lua_createReverse6(const string &format, boost::optional<opts_t> e
     return fmt.str();
   }
   catch(std::exception& ex) {
-    g_log<<Logger::Error<<"Lua record exception: "<<ex.what()<<endl;
+    g_log<<Logger::Error<<"createReverse6 exception: "<<ex.what()<<endl;
   }
   catch(PDNSException& ex) {
-    g_log<<Logger::Error<<"Lua record exception: "<<ex.reason<<endl;
+    g_log<<Logger::Error<<"createReverse6 exception: "<<ex.reason<<endl;
   }
-  return {"unknown"};
+  return {"error"};
 }
 
 static vector<string> lua_filterForward(const string& address, NetmaskGroup& nmg, boost::optional<string> fallback)

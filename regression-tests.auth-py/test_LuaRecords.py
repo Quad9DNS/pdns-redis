@@ -65,6 +65,7 @@ some.ifportup                3600 IN LUA  A     "ifportup(8080, {{'192.168.42.21
 multi.ifportup               3600 IN LUA  A     "ifportup(8080, {{ {{'192.168.42.23'}}, {{'192.168.42.21', '{prefix}.102'}}, {{'{prefix}.101'}} }})"
 none.ifportup                3600 IN LUA  A     "ifportup(8080, {{'192.168.42.21', '192.168.21.42'}})"
 all.noneup.ifportup          3600 IN LUA  A     "ifportup(8080, {{'192.168.42.21', '192.168.21.42'}}, {{ backupSelector='all' }})"
+empty.noneup.ifportup        3600 IN LUA  A     "ifportup(8080, {{'192.168.42.21', '192.168.21.42'}}, {{ backupSelector='empty' }})"
 
 hashed.example.org.          3600 IN LUA  A     "pickhashed({{ '1.2.3.4', '4.3.2.1' }})"
 hashed-v6.example.org.       3600 IN LUA  AAAA  "pickhashed({{ '2001:db8:a0b:12f0::1', 'fe80::2a1:9bff:fe9b:f268' }})"
@@ -442,6 +443,19 @@ class TestLuaRecords(BaseLuaTest):
         res = self.sendUDPQuery(query)
         self.assertRcodeEqual(res, dns.rcode.NOERROR)
         self.assertEqual(res.answer, expected)
+
+    def testIfportupWithAllDownAndEmptyBackupSelector(self):
+        """
+        Basic ifportup() test with all ports DOWN, fallback to 'empty' backup selector
+        """
+        name = 'empty.noneup.ifportup.example.org.'
+        query = dns.message.make_query(name, dns.rdatatype.A)
+
+        # With backupSelector='empty', we always return NODATA when there are no healthy targets,
+        # even before health checks have run (fail-close behavior).
+        res = self.sendUDPQuery(query)
+        self.assertRcodeEqual(res, dns.rcode.NOERROR)
+        self.assertEqual(res.answer, [])
 
     def testIfurlup(self):
         """
@@ -1090,7 +1104,9 @@ class TestLuaRecords(BaseLuaTest):
             }),
             ".createreverse.example.org." : (dns.rdatatype.PTR, {
                 "4.3.2.1": "1-2-3-4.example.com.",
-                "10.10.10.10": "quad10.example.com."   # exception
+                "10.10.10.10": "quad10.example.com.",  # exception
+                # error: values not in the 0..255 range
+                "256.384.512.640": "error."
             }),
             ".createforward6.example.org." : (dns.rdatatype.AAAA, {
                 "2001--db8" : "2001::db8",
@@ -1101,7 +1117,11 @@ class TestLuaRecords(BaseLuaTest):
             }),
             ".createreverse6.example.org." : (dns.rdatatype.PTR, {
                 "8.b.d.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2" : "2001--db8.example.com.",
-                "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2" : "example.example.com."   # exception
+                "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2" : "example.example.com.",   # exception
+                # error: fewer than 32 labels (including ".createreverse6.example.org.")
+                "8.b.d.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.0.2" : "unknown.",
+                # error: I and O instead of 1 and 0 in the would-be address
+                "O.0.0.0.0.0.0.0.0.0.0.0.0.0.0.1.0.b.c.A.2.F.E.9.C.0.0.3.0.0.2.I" : "error."
             })
         }
 
