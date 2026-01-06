@@ -29,8 +29,8 @@ BOOST_AUTO_TEST_CASE(test_cuckoo_insert_duplicate)
 
   BOOST_CHECK(!cuckoo.contains("test"));
   for (size_t i = 0; i < 100; i++) {
-    cuckoo.insertKey("test");
-    BOOST_CHECK(cuckoo.contains("test"));
+    cuckoo.insertKey("test_" + std::to_string(i));
+    BOOST_CHECK(cuckoo.contains("test_" + std::to_string(i)));
   }
 
   cuckoo.remove("test");

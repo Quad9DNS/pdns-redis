@@ -29,6 +29,7 @@
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/sequenced_index.hpp>
 #include <boost/multi_index/key_extractors.hpp>
+#include <cassert>
 #include <cstring>
 #include <iterator>
 #include <limits>
@@ -484,13 +485,38 @@ public:
     uint32_t d_fingerprintBits{8};
     bool d_ttlEnabled;
     uint32_t d_ttl;
-    uint32_t d_ttlBits{32};
+    uint32_t d_ttlBits{8};
     uint32_t d_ttlResolution{1};
     bool d_lruEnabled;
+    uint32_t d_lruBits{8};
+
+    struct SlotFieldDescription
+    {
+      SlotFieldDescription() {};
+      SlotFieldDescription(size_t startBit, size_t endBit)
+      {
+        assert(endBit - startBit <= 32);
+        startByte = startBit / 8;
+        endByte = (endBit + 7) / 8;
+        len = endByte - startByte;
+        shift = endByte * 8 - endBit;
+        mask = ((1ul << (endBit - startBit)) - 1) << shift;
+        valueMask = (1ul << (endBit - startBit)) - 1;
+      };
+
+      size_t startByte;
+      size_t endByte;
+      size_t len;
+      uint64_t mask;
+      size_t shift;
+      uint32_t valueMask;
+    };
 
     // derived fields
-    size_t d_fingerprintBytes{0};
-    size_t d_ttlBytes{0};
+    SlotFieldDescription d_fingerprintSlot{};
+    SlotFieldDescription d_lruSlot{};
+    SlotFieldDescription d_ttlSlot{};
+    size_t d_dataBlockBits{0};
     size_t d_dataBlockSize{0};
   };
 
@@ -509,15 +535,14 @@ public:
     }
 
     d_fingerprintMask = (1L << d_settings.d_fingerprintBits) - 1;
-    d_settings.d_fingerprintBytes = (d_settings.d_fingerprintBits + 7) / 8;
-    d_settings.d_ttlBytes = (d_settings.d_ttlBits + 7) / 8;
-    d_settings.d_dataBlockSize = d_settings.d_fingerprintBytes;
+    d_settings.d_dataBlockBits = d_settings.d_fingerprintBits;
     if (d_settings.d_lruEnabled) {
-      d_settings.d_dataBlockSize += 1;
+      d_settings.d_dataBlockBits += 8;
     }
     if (d_settings.d_ttlEnabled) {
-      d_settings.d_dataBlockSize += d_settings.d_ttlBytes;
+      d_settings.d_dataBlockBits += d_settings.d_ttlBits;
     }
+    d_settings.d_dataBlockSize = (d_settings.d_dataBlockBits + 7) / 8;
 
     timespec now;
     gettime(&now);
@@ -580,8 +605,6 @@ public:
   bool contains(const std::string& key) override
   {
     auto [i1, fp] = getIndexAndFingerprint(key);
-    timespec now;
-    gettime(&now);
 
     auto result = d_buckets[i1].lock()->contains(fp, d_settings);
     if (result) {
@@ -640,6 +663,9 @@ public:
       if (d_settings.d_ttlEnabled) {
         removed += lock->ageAndRemoveExpired(d_settings, cycles);
       }
+      if (d_settings.d_lruEnabled) {
+        lock->ageLruCounters(d_settings, cycles);
+      }
     }
     d_lastScan = now - adjustment;
     d_stats.d_entriesCount -= removed;
@@ -683,20 +709,33 @@ private:
     explicit DataBlock(unsigned char* start, unsigned char* end) :
       d_dataStart(start), d_dataEnd(end) {}
 
-    size_t fingerprintStart([[maybe_unused]] const CuckooSettings& settings) const
+    uint32_t loadBits(CuckooSettings::SlotFieldDescription slot) const
     {
-      return 0;
-    }
+      uint64_t loaded = 0;
+      for (size_t i = 0; i < slot.len; ++i) {
+        loaded += ((uint64_t)d_dataStart + slot.startByte + i) << ((slot.len - (i + 1)) * 8);
+      };
+      return (loaded & slot.mask) >> slot.shift;
+    };
 
-    size_t lruCounterStart(const CuckooSettings& settings) const
+    void storeBits(CuckooSettings::SlotFieldDescription slot, uint32_t value)
     {
-      return settings.d_fingerprintBytes;
-    }
+      uint32_t maskedValue = value & slot.valueMask;
+      uint64_t loaded = 0;
+      for (size_t i = 0; i < slot.len; ++i) {
+        loaded += ((uint64_t)d_dataStart + slot.startByte + i) << ((slot.len - (i + 1)) * 8);
+      };
+      auto maskedLoaded = loaded & !slot.mask;
+      auto final = maskedLoaded | (maskedValue << slot.shift);
+      for (size_t i = 0; i < slot.len; ++i) {
+        *(d_dataStart + slot.startByte + i) = final >> ((slot.len - (i + 1)) * 8);
+      };
+    };
 
-    size_t ttlStart(const CuckooSettings& settings) const
+    bool occupied(const CuckooSettings& settings)
     {
-      return settings.d_fingerprintBytes + (settings.d_lruEnabled ? 1 : 0);
-    }
+      return getFingerprint(settings) != EMPTY_FINGERPRINT;
+    };
 
     void clear()
     {
@@ -708,23 +747,64 @@ private:
       std::swap_ranges(this->d_dataStart, this->d_dataEnd, other.d_dataStart);
     }
 
+    void copyFrom(DataBlock& other)
+    {
+      std::copy(other.d_dataStart, other.d_dataEnd, this->d_dataStart);
+    }
+
+    void mergeWith(const CuckooSettings& settings, DataBlock& other)
+    {
+      if (settings.d_lruEnabled) {
+        auto counter = loadBits(settings.d_lruSlot);
+        auto otherCounter = other.loadBits(settings.d_lruSlot);
+        auto newCounter = counter + otherCounter;
+        // Overflow handling
+        if (newCounter < counter) {
+          newCounter = settings.d_lruSlot.valueMask;
+        }
+        newCounter &= settings.d_lruSlot.valueMask;
+        storeBits(settings.d_lruSlot, newCounter);
+      };
+      if (settings.d_ttlEnabled) {
+        auto ttl = loadBits(settings.d_ttlSlot);
+        auto otherTtl = other.loadBits(settings.d_ttlSlot);
+        storeBits(settings.d_ttlSlot, std::max(ttl, otherTtl));
+      };
+    }
+
     Fingerprint getFingerprint(const CuckooSettings& settings) const
     {
-      Fingerprint fp = 0;
-      memcpy(&fp, d_dataStart, settings.d_fingerprintBytes);
-      return fp;
+      return loadBits(settings.d_fingerprintSlot);
     }
 
     uint32_t getTtl(const CuckooSettings& settings) const
     {
-      uint32_t ttl = 0;
-      memcpy(&ttl, d_dataStart + ttlStart(settings), settings.d_ttlBytes);
-      return ttl;
+      return loadBits(settings.d_ttlSlot);
     }
 
     uint8_t getLru(const CuckooSettings& settings) const
     {
-      return *(d_dataStart + lruCounterStart(settings));
+      return loadBits(settings.d_lruSlot);
+    }
+
+    void setFingerprint(const CuckooSettings& settings, Fingerprint fp)
+    {
+      storeBits(settings.d_fingerprintSlot, fp);
+    }
+
+    void setTtl(const CuckooSettings& settings, uint32_t ttl)
+    {
+      storeBits(settings.d_ttlSlot, ttl);
+    }
+
+    void setLru(const CuckooSettings& settings, uint32_t lru)
+    {
+      storeBits(settings.d_lruSlot, lru);
+    }
+
+    void incrementLru(const CuckooSettings& settings)
+    {
+      storeBits(settings.d_lruSlot, loadBits(settings.d_lruSlot) + 1);
     }
   };
 
@@ -748,14 +828,11 @@ private:
         bool reinsert = storedFingerprint == fp;
         if (reinsert || storedFingerprint == EMPTY_FINGERPRINT) {
           if (!reinsert) {
-            slot.swapWith(block);
+            slot.copyFrom(block);
             stats.d_entriesCount += 1;
           }
           else {
-            // TODO: Merge associated data
-            if (settings.d_lruEnabled) {
-              accessSlot(i, settings);
-            }
+            slot.mergeWith(settings, block);
           }
 
           return true;
@@ -767,12 +844,10 @@ private:
     bool contains(Fingerprint fp, const CuckooSettings& settings)
     {
       for (size_t i = 0; i < settings.d_bucketSize; ++i) {
-        Fingerprint storedFingerprint = 0;
-        // TODO: move this over to data block, since it should support values not aligned to bytes
-        memcpy(&storedFingerprint, &d_data[fingerprintStart(i, settings)], settings.d_fingerprintBytes);
-        if (storedFingerprint == fp) {
+        DataBlock slot = getSlot(i, settings);
+        if (slot.getFingerprint(settings) == fp) {
           if (settings.d_lruEnabled) {
-            accessSlot(i, settings);
+            slot.incrementLru(settings);
           }
           return true;
         }
@@ -794,17 +869,19 @@ private:
     }
 
     // For cuckoo eviction - returns evicted fingerprint
-    void kickRandom(DataBlock& data_block, const CuckooSettings& settings, std::mt19937& rng)
+    void kickRandom(DataBlock& replacement, const CuckooSettings& settings, std::mt19937& rng)
     {
       size_t pos = rng() % settings.d_bucketSize;
-      DataBlock(d_data.data() + fingerprintStart(pos, settings), d_data.data() + fingerprintStart(pos, settings) + settings.d_fingerprintBytes).swapWith(data_block);
+      getSlot(pos, settings).swapWith(replacement);
     }
 
     // For LRU cuckoo eviction - returns true if fingeprint was evicted - the fingeprint is stored in kicked_fp
-    bool kickLru(DataBlock& data_block, const CuckooSettings& settings)
+    bool kickLru(DataBlock& replacement, const CuckooSettings& settings)
     {
-      uint8_t min = data_block.getLru(settings);
-      if (min == 0) {
+      uint8_t min = replacement.getLru(settings);
+      if (min == 1) {
+        // TODO: what happens if LRU is really 1
+        // 1 is the default for new items, but it could happen for older items too
         min = std::numeric_limits<uint8_t>::max();
       }
       size_t pos = settings.d_bucketSize;
@@ -818,7 +895,7 @@ private:
       }
       if (pos < settings.d_bucketSize) {
         DataBlock slot = getSlot(pos, settings);
-        slot.swapWith(data_block);
+        slot.swapWith(replacement);
         return true;
       }
       else {
@@ -831,6 +908,10 @@ private:
       size_t removed = 0;
       for (size_t i = 0; i < settings.d_bucketSize; ++i) {
         DataBlock slot = getSlot(i, settings);
+        if (!slot.occupied(settings)) {
+          continue;
+        };
+
         uint32_t ttl = slot.getTtl(settings);
         if (ttl <= cycles) {
           removed += 1;
@@ -839,36 +920,24 @@ private:
         else {
           ttl -= cycles;
         }
+        slot.setTtl(settings, ttl);
       }
       return removed;
+    }
+
+    void ageLruCounters(const CuckooSettings& settings, size_t cycles)
+    {
+      for (size_t i = 0; i < settings.d_bucketSize; ++i) {
+        DataBlock slot = getSlot(i, settings);
+        uint32_t lru = slot.getLru(settings);
+        lru >>= cycles;
+        slot.setLru(settings, lru);
+      }
     }
 
     DataBlock getSlot(int slot, const CuckooSettings& settings)
     {
       return DataBlock(d_data.data() + slot * settings.d_dataBlockSize, d_data.data() + (slot + 1) * settings.d_dataBlockSize);
-    }
-
-    // TODO: maybe remove this if we age all LRU counters on some generic scan
-    void accessSlot(int slot, const CuckooSettings& settings)
-    {
-      if ((uint8_t)d_data[lruCounterStart(slot, settings)] == 255) {
-        // Age all counters when one saturates
-        for (uint32_t i = 0; i < settings.d_bucketSize; i++) {
-          // TODO: check does this ruin eviction process - an item that is used more often might be perceived as less used because of this, if it was inside a very active bucket
-          d_data[lruCounterStart(i, settings)] >>= 1;
-        }
-      }
-      d_data[lruCounterStart(slot, settings)] += 1;
-    }
-
-    size_t fingerprintStart(size_t index, const CuckooSettings& settings)
-    {
-      return index * settings.d_dataBlockSize;
-    }
-
-    size_t lruCounterStart(size_t index, const CuckooSettings& settings)
-    {
-      return index * settings.d_dataBlockSize + settings.d_fingerprintBytes;
     }
   };
 
@@ -876,12 +945,12 @@ private:
   {
     std::vector<unsigned char> data(d_settings.d_dataBlockSize, 0);
     DataBlock block(data.data(), data.data() + data.size());
-    memcpy(&data[block.fingerprintStart(d_settings)], &fp, d_settings.d_fingerprintBytes);
+    block.setFingerprint(d_settings, fp);
     if (d_settings.d_ttlEnabled) {
-      memcpy(&data[block.ttlStart(d_settings)], &d_settings.d_ttl, d_settings.d_ttlBytes);
+      block.setTtl(d_settings, d_settings.d_ttl);
     }
     if (d_settings.d_lruEnabled) {
-      data[block.getLru(d_settings)] = 1;
+      block.setLru(d_settings, 1);
     }
     // Explicitly move - block holds a pointer to data - without move this gets copied and the reference becomes invalid
     return {std::move(data), std::move(block)};
